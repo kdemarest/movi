@@ -1,0 +1,9 @@
+{
+  "id": "movi",
+  "name": "movi",
+  "version": "0.0.1",
+  "minAppVersion": "1.11.4",
+  "description": "Script-driven still-image movie playback for Obsidian.",
+  "author": "Ken Demarest",
+  "isDesktopOnly": false
+}
