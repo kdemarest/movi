@@ -1,28 +1,42 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "$(basename "$PWD")" != "movi" ]]; then
+  echo "Run this from inside movi/ (cd movi && bash watch-runbash.sh)." >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CMD_FILE="$VAULT_ROOT/RunTests.ai"
-OUT_FILE="$VAULT_ROOT/RunTests.log"
-LAST_FILE="$VAULT_ROOT/RunTests.last.log"
-TMP_FILE="$VAULT_ROOT/RunTests.last.tmp"
+CMD_FILE="$SCRIPT_DIR/RunBash.ai"
+OUT_FILE="$SCRIPT_DIR/RunBash.log"
+LAST_FILE="$SCRIPT_DIR/RunBash.last.log"
+TMP_FILE="$SCRIPT_DIR/RunBash.last.tmp"
+HEARTBEAT_FILE="$SCRIPT_DIR/.runbash-watcher.heartbeat"
 
 if ! command -v inotifywait >/dev/null 2>&1; then
   echo "Missing dependency: inotifywait (install with: pkg install inotify-tools)" >&2
   exit 1
 fi
 
-touch "$CMD_FILE"
-touch "$OUT_FILE"
-touch "$LAST_FILE"
+touch "$CMD_FILE" "$OUT_FILE" "$LAST_FILE"
+
+beat() {
+  date +%s > "$HEARTBEAT_FILE" 2>/dev/null || true
+}
+
+extract_command() {
+  local raw cmd
+  raw="$(cat "$CMD_FILE" 2>/dev/null || true)"
+  cmd="$(printf '%s\n' "$raw" | sed 's/\r$//' | awk 'NF && $1 !~ /^#/{print; exit}')"
+  cmd="${cmd#${cmd%%[![:space:]]*}}"
+  cmd="${cmd%${cmd##*[![:space:]]}}"
+  printf '%s' "$cmd"
+}
 
 run_command() {
   local cmd="$1"
-  local req
-  local ts_start
-  local ts_end
-  local rc
+  local req ts_start ts_end rc
 
   req="REQ-$(date -u +"%Y%m%dT%H%M%SZ")-$$"
   ts_start="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -38,11 +52,11 @@ run_command() {
   set +e
   case "$cmd" in
     "movi build")
-      (cd "$VAULT_ROOT/movi" && bash ./build.sh) >> "$TMP_FILE" 2>&1
+      (cd "$SCRIPT_DIR" && bash build.sh) >> "$TMP_FILE" 2>&1
       rc=$?
       ;;
     "movi smoke")
-      (cd "$VAULT_ROOT/movi" && bash ./build.sh) >> "$TMP_FILE" 2>&1
+      (cd "$SCRIPT_DIR" && bash build.sh) >> "$TMP_FILE" 2>&1
       rc=$?
       if [ $rc -eq 0 ]; then
         {
@@ -80,16 +94,16 @@ run_command() {
 }
 
 process_file() {
-  local line
-  line="$(grep -v '^[[:space:]]*$' "$CMD_FILE" | head -n 1 || true)"
-  if [ -z "$line" ]; then
+  local cmd
+  beat
+  cmd="$(extract_command)"
+  if [[ -z "$cmd" ]]; then
     return
   fi
-
-  run_command "$line"
-  : > "$CMD_FILE"
+  run_command "$cmd"
 }
 
+beat
 process_file
 
 echo "Watching $CMD_FILE"

@@ -51,6 +51,8 @@ register(() => {
 
     static parseScriptLines(lines, filePath, startLine) {
       const actions = [];
+      const showByName = {};
+      let autoNameCounter = 1;
 
       for (let i = 0; i < lines.length; i += 1) {
         const raw = lines[i];
@@ -58,13 +60,57 @@ register(() => {
         if (!trimmed) continue;
         if (/^#/.test(trimmed)) continue;
 
-        const showMatch = trimmed.match(/^show\s+(.+?)\s+for\s+([0-9]*\.?[0-9]+s)$/i);
+        const showMatch = trimmed.match(/^show\s+(.+?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s+for\s+([0-9]*\.?[0-9]+s)$/i);
         if (showMatch) {
           const image = showMatch[1].trim();
-          const duration = Parser.parseDuration(showMatch[2], filePath, startLine + i);
-          actions.push({
+          const explicitName = showMatch[2] ? showMatch[2].trim() : "";
+          const name = explicitName || `shot${autoNameCounter++}`;
+
+          if (Object.prototype.hasOwnProperty.call(showByName, name)) {
+            throw new ParserError({
+              code: "MPARSE008",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `Duplicate show name '${name}'. Show names must be unique.`,
+            });
+          }
+
+          const duration = Parser.parseDuration(showMatch[3], filePath, startLine + i);
+          const action = {
             type: "show",
             image,
+            name,
+            durationSeconds: duration,
+            line: startLine + i,
+            column: 1,
+          };
+          actions.push(action);
+          showByName[name] = action;
+          continue;
+        }
+
+        const zoomMatch = trimmed.match(/^zoom\s+([A-Za-z_][A-Za-z0-9_]*)\s+to\s+([0-9]*\.?[0-9]+)\s+for\s+([0-9]*\.?[0-9]+s)$/i);
+        if (zoomMatch) {
+          const targetName = zoomMatch[1];
+          const zoomEnd = Parser.parseZoomFactor(zoomMatch[2], filePath, startLine + i);
+          const duration = Parser.parseDuration(zoomMatch[3], filePath, startLine + i);
+
+          const lastShow = Parser.findLastShow(actions);
+          if (!lastShow) {
+            throw new ParserError({
+              code: "MPARSE009",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `Zoom requires a prior show action.`,
+            });
+          }
+
+          actions.push({
+            type: "zoom",
+            targetName,
+            zoomEnd,
             durationSeconds: duration,
             line: startLine + i,
             column: 1,
@@ -77,7 +123,7 @@ register(() => {
           file: filePath,
           line: startLine + i,
           column: 1,
-          message: `Unknown or invalid script command: '${trimmed}'. Expected: show <image> for <duration>s`,
+          message: `Unknown or invalid script command: '${trimmed}'. Expected: show <image> [as <name>] for <duration>s OR zoom <name> to <level> for <duration>s`,
         });
       }
 
@@ -92,6 +138,27 @@ register(() => {
       }
 
       return { actions };
+    }
+
+    static findLastShow(actions) {
+      for (let i = actions.length - 1; i >= 0; i -= 1) {
+        if (actions[i] && actions[i].type === "show") return actions[i];
+      }
+      return null;
+    }
+
+    static parseZoomFactor(token, filePath, line) {
+      const value = parseFloat(String(token || ""));
+      if (!(value > 0)) {
+        throw new ParserError({
+          code: "MPARSE006",
+          file: filePath,
+          line,
+          column: 1,
+          message: `Zoom factor must be greater than zero: '${token}'.`,
+        });
+      }
+      return value;
     }
 
     static parseDuration(token, filePath, line) {

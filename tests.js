@@ -20,7 +20,7 @@ register(() => {
   }
 
   class LoggerSmokeTests {
-    static run() {
+    static async run() {
       const cases = [];
 
       cases.push(function testFormatIncludesFields() {
@@ -60,12 +60,75 @@ register(() => {
         assertTrue(out === "dddd\n" || out === "cccc\ndddd\n" || out === "", "trim should keep whole trailing lines");
       });
 
-      return runCaseList("Logger", cases);
+      cases.push(async function testAppendRunHeaderWritesMarker() {
+        const state = {};
+        const adapter = {
+          async read(path) {
+            if (!(path in state)) throw new Error("missing");
+            return state[path];
+          },
+          async write(path, content) {
+            state[path] = content;
+          },
+        };
+        const app = { vault: { adapter } };
+        const logger = new Movi.Logger(app, { logPath: "movi.log", maxBytes: 4096 });
+
+        await logger.appendRunHeader();
+        assertContains(state["movi.log"] || "", "=== RUN ", "run header should include RUN marker");
+      });
+
+      cases.push(async function testInfoWritesStructuredEntry() {
+        const state = {};
+        const adapter = {
+          async read(path) {
+            if (!(path in state)) throw new Error("missing");
+            return state[path];
+          },
+          async write(path, content) {
+            state[path] = content;
+          },
+        };
+        const app = { vault: { adapter } };
+        const logger = new Movi.Logger(app, { logPath: "movi.log", maxBytes: 4096 });
+
+        await logger.info("validate-script", "parsed 1 action", { category: "Parser", code: "MPARSE_OK", file: "demo.md" });
+
+        const out = state["movi.log"] || "";
+        assertContains(out, "| INFO |", "info should write INFO level");
+        assertContains(out, "| Parser |", "info should include category");
+        assertContains(out, "| MPARSE_OK |", "info should include code");
+        assertContains(out, "| validate-script |", "info should include operation");
+      });
+
+      cases.push(async function testAppendRawTrimsAfterMultipleWrites() {
+        const state = {};
+        const adapter = {
+          async read(path) {
+            if (!(path in state)) throw new Error("missing");
+            return state[path];
+          },
+          async write(path, content) {
+            state[path] = content;
+          },
+        };
+        const app = { vault: { adapter } };
+        const logger = new Movi.Logger(app, { logPath: "movi.log", maxBytes: 12 });
+
+        await logger.appendRaw("aaa\nbbb\n");
+        await logger.appendRaw("ccc\nddd\n");
+
+        const out = state["movi.log"] || "";
+        assertTrue(out.length <= 12, "trimmed log should stay under cap after multiple writes");
+        assertContains(out, "ddd", "trimmed log should keep newest tail content");
+      });
+
+      return await runCaseList("Logger", cases);
     }
   }
 
   class ParserSmokeTests {
-    static run() {
+    static async run() {
       const cases = [];
 
       cases.push(function testFindScriptSection() {
@@ -81,6 +144,38 @@ register(() => {
         assertEqual(parsed.actions[0].type, "show", "action type");
         assertEqual(parsed.actions[0].image, "hero.png", "image field");
         assertEqual(parsed.actions[0].durationSeconds, 2.5, "duration field");
+      });
+
+      cases.push(function testParseShowAndZoomActions() {
+        const md = "# Script\nshow hero.png as intro for 3s\nzoom ring to 1.8 for 1.5s\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions.length, 2, "two actions expected");
+        assertEqual(parsed.actions[0].type, "show", "first action type");
+        assertEqual(parsed.actions[0].name, "intro", "show name field");
+        assertEqual(parsed.actions[1].type, "zoom", "second action type");
+        assertEqual(parsed.actions[1].targetName, "ring", "zoom target field");
+        assertEqual(parsed.actions[1].zoomEnd, 1.8, "zoom end field");
+        assertEqual(parsed.actions[1].durationSeconds, 1.5, "zoom duration field");
+      });
+
+      cases.push(function testParseMultipleZoomActionsAfterOneShow() {
+        const parsed = Movi.Parser.parseMarkdown("# Script\nshow hero.png for 3s\nzoom aeku_head to 1.8 for 1.5s\nzoom aeono_head to 1.8 for 1.5s\n", "demo.md");
+        assertEqual(parsed.actions.length, 3, "three actions expected");
+        assertEqual(parsed.actions[1].type, "zoom", "second action zoom");
+        assertEqual(parsed.actions[2].type, "zoom", "third action zoom");
+        assertEqual(parsed.actions[2].targetName, "aeono_head", "third zoom target");
+      });
+
+      cases.push(function testZoomWithoutAnyShowStillErrors() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown("# Script\nzoom ring to 1.8 for 1s\n", "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE009", "zoom-without-show code");
+          assertEqual(error.line, 2, "zoom-without-show line");
+        }
+        assertTrue(saw, "zoom without show should throw");
       });
 
       cases.push(function testMissingScriptSectionError() {
@@ -108,11 +203,11 @@ register(() => {
         assertTrue(saw, "unknown command should throw");
       });
 
-      return runCaseList("Parser", cases);
+      return await runCaseList("Parser", cases);
     }
   }
 
-  function runCaseList(suiteName, tests) {
+  async function runCaseList(suiteName, tests) {
     const results = [];
     let passed = 0;
     let failed = 0;
@@ -121,7 +216,7 @@ register(() => {
       const fn = tests[i];
       const name = fn.name || `${suiteName}-case-${i + 1}`;
       try {
-        fn();
+        await fn();
         passed += 1;
         results.push({ suite: suiteName, name, ok: true });
       } catch (error) {
@@ -135,7 +230,7 @@ register(() => {
 
   class Test {
     static async runAll(logger) {
-      const suites = [LoggerSmokeTests.run(), ParserSmokeTests.run()];
+      const suites = [await LoggerSmokeTests.run(), await ParserSmokeTests.run()];
       const all = [];
       let passed = 0;
       let failed = 0;
@@ -169,3 +264,5 @@ register(() => {
     Test,
   };
 });
+
+
