@@ -4,8 +4,9 @@
 - Workflow: keep changes minimal, preserve behavior unless requested, and record shipped work under Implemented.
 - Constraint: update Implemented while implementing; do not edit Planned unless explicitly requested.
 - Runtime priorities: deterministic script-driven playback, strict Parser/Content error handling, and Android-compatible Obsidian operation.
+- Additional design docs (must stay current in this Overview list):
+  - playbackDesign.md — playback timeline/runtime state, seek/scrub model, snapshot strategy.
 - Use this doc to validate required behavior, current delivery state, and remaining planned surface.
-
 
 
 
@@ -109,10 +110,12 @@ First runnable milestone: execute a `# Script` section in Markdown that does onl
 - Runtime logging writes structured entries to `movi.log` and appends per-load run headers.
 - Log trimming is enforced on append (default cap: 6 KB).
 - Fail-loud v0 error path is console + `movi.log` with parser/content categorization.
+- Player View emits focused Mode Ribbon diagnostics into `movi.log` (`UI/MMODE001`) to aid reload/header-visibility troubleshooting.
 
 ### Parser and validation contracts
 
 - MoviScript parser v0 is implemented for `# Script` discovery and minimal `show <image> for <duration>s` command parsing.
+- Parser output includes normalized `requiredAssets` derived from parsed script commands (v0: `show`), as the single source for script asset dependency reporting.
 - `movi Validate Active Script` validates active `.md`/`.ms` scripts and reports parse/content failures through fail-loud logging.
 - `movi Run Smoke Tests` exists for parser/logger smoke validation.
 
@@ -127,7 +130,14 @@ First runnable milestone: execute a `# Script` section in Markdown that does onl
 
 - Player View renders zoom-anchor debug marker (magenta dot) for target verification.
 - Player frame clips transformed image output (`overflow: hidden`) for viewport-cropped pan/zoom behavior.
-- From GPTViz Candidate View, a `Movi Play` ribbon action resolves the current candidate and lists matching markdown scripts that use that asset in `show` lines.
+- Player View bottom controls include an icon-based restart button and a centered play/pause toggle that switches icon/state while playback runs.
+- Player View includes a basic time scrubber above bottom controls for seek preview and commit-to-seek, with playback resuming automatically when scrubbing ends if it was previously playing.
+- movi no longer injects top-right header action buttons in Markdown, GPTViz Candidate View, or movi Player View; Mode Ribbon button ownership is external (gptviz).
+- movi Player View ensures a `.mode-ribbon` container exists in the view header so mode controls can render on the movie screen; the raw `.view-actions` cluster is hidden there, and a Mode Ribbon `More Actions` proxy button opens the same options menu.
+- Player View re-ensures Mode Ribbon on open and keeps it synchronized via header mutation observation, so `.mode-ribbon` and hidden `.view-actions` state self-heal after view/plugin reload churn.
+- The Mode Ribbon `More Actions` proxy resolves the live options element at click time and renders with standard header action classes/color so the icon remains visible across themes.
+- movi listens for `gptviz:movie-mode-request` and switches to movie playback by running the requested `.md`/`.ms` script path when provided, or falling back to active-script playback.
+- Player View opens/reuses a tab leaf (not right-side split) and applies candidate-style active-view mobile navbar suppression while the Player View is active, so playback controls use the full mobile screen footprint.
 
 ### Project-local watcher isolation
 

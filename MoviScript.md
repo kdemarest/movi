@@ -145,6 +145,17 @@ Why this is preferred:
 - simple to debug on Android;
 - best control over explicit, human-readable errors.
 
+## Parser dependency reporting contract (required)
+
+The MoviScript parser is the authoritative source for script asset dependencies.
+
+Required behavior:
+
+- Parser output must include a deduplicated `requiredAssets` list.
+- `requiredAssets` is derived from parsed script commands (v0: `show <image> ...`), not from ad hoc `Depends:` declarations.
+- Dependency consumers (for example MovieMode selection and dependency analysis) must query parser-produced `requiredAssets` rather than reparsing script text with independent heuristics.
+- Asset references are normalized for matching (trimmed, wiki/quote wrappers removed, default `.png` extension when omitted, case-insensitive comparison via normalized lowercase output).
+
 ## MoviScript v0 grammar contract (parser-facing)
 
 This section defines the minimum contract for interoperable parsers and AI-assisted authoring.

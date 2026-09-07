@@ -24,7 +24,7 @@ register(() => {
       let start = -1;
 
       for (let i = 0; i < lines.length; i += 1) {
-        if (/^#\s*Script\s*$/i.test(lines[i])) {
+        if (/^#{1,6}\s*Script\b.*$/i.test(lines[i])) {
           start = i;
           break;
         }
@@ -42,7 +42,7 @@ register(() => {
 
       const body = [];
       for (let i = start + 1; i < lines.length; i += 1) {
-        if (/^#\s+/.test(lines[i])) break;
+        if (/^#{1,6}\s+/.test(lines[i])) break;
         body.push(lines[i]);
       }
 
@@ -51,6 +51,8 @@ register(() => {
 
     static parseScriptLines(lines, filePath, startLine) {
       const actions = [];
+      const requiredAssets = [];
+      const seenRequiredAssets = new Set();
       const showByName = {};
       let autoNameCounter = 1;
 
@@ -87,6 +89,12 @@ register(() => {
           };
           actions.push(action);
           showByName[name] = action;
+
+          const normalizedAsset = Parser.normalizeAssetRef(image);
+          if (normalizedAsset && !seenRequiredAssets.has(normalizedAsset)) {
+            seenRequiredAssets.add(normalizedAsset);
+            requiredAssets.push(normalizedAsset);
+          }
           continue;
         }
 
@@ -137,7 +145,40 @@ register(() => {
         });
       }
 
-      return { actions };
+      return {
+        actions,
+        requiredAssets,
+      };
+    }
+
+    static normalizeAssetRef(assetRef) {
+      const raw = String(assetRef || "").trim();
+      if (!raw) {
+        return "";
+      }
+
+      let cleaned = raw;
+      const quoted = cleaned.match(/^(["'])(.*)\1$/);
+      if (quoted) {
+        cleaned = quoted[2];
+      }
+
+      const wiki = cleaned.match(/^\[\[(.+)\]\]$/);
+      if (wiki) {
+        cleaned = wiki[1].split("|")[0].trim();
+      }
+
+      cleaned = cleaned.replace(/^<|>$/g, "").trim();
+      if (!cleaned) {
+        return "";
+      }
+
+      const hasExtension = /\.[A-Za-z0-9]+$/.test(cleaned);
+      return (hasExtension ? cleaned : `${cleaned}.png`).toLowerCase();
+    }
+
+    static getRequiredAssets(markdownText, filePath) {
+      return Parser.parseMarkdown(markdownText, filePath).requiredAssets || [];
     }
 
     static findLastShow(actions) {

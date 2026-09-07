@@ -73,7 +73,19 @@ register(() => {
 
       this.markdownMoviPlayActionClass = "movi-play-action";
       this.candidateMoviPlayActionClass = "movi-candidate-play-action";
+      this.playerMoviPlayActionClass = "movi-player-play-action";
+      this.playerReturnActionClass = "movi-player-return-action";
       this.markdownActionRefreshTimer = null;
+      this.lastPlayedScriptPath = null;
+
+      this.playerViewStyle = document.createElement("style");
+      this.playerViewStyle.textContent = `
+        .movi-player-active .mobile-navbar {
+          display: none !important;
+        }
+      `;
+      document.head.appendChild(this.playerViewStyle);
+      this.setPlayerViewActive(false);
 
       this.registerView(
         Movi.MOVI_PLAYER_VIEW_TYPE,
@@ -112,6 +124,7 @@ register(() => {
             this.addMarkdownPlayActions();
           }
           this.addCandidateViewPlayActions();
+          this.addPlayerViewPlayActions();
         })
       );
 
@@ -121,6 +134,8 @@ register(() => {
             this.addMarkdownPlayActions();
           }
           this.addCandidateViewPlayActions();
+          this.addPlayerViewPlayActions();
+          this.setPlayerViewActive(this.isPlayerView(leaf && leaf.view));
         })
       );
 
@@ -128,6 +143,7 @@ register(() => {
         this.app.workspace.on("layout-change", () => {
           this.addMarkdownPlayActions();
           this.addCandidateViewPlayActions();
+          this.addPlayerViewPlayActions();
         })
       );
 
@@ -145,8 +161,35 @@ register(() => {
         })
       );
 
+      this.registerDomEvent(window, "gptviz:movie-mode-request", (event) => {
+        this.handleMovieModeRequest(event).catch(async (error) => {
+          const requestedPath =
+            event && event.detail && typeof event.detail.filePath === "string"
+              ? event.detail.filePath
+              : "<active>";
+          await this.reportScriptError(requestedPath, error, "movie-mode-request");
+        });
+      });
+
+      this.registerDomEvent(window, "gptviz:script-required-assets-request", (event) => {
+        this.handleScriptRequiredAssetsRequest(event).catch(async (error) => {
+          const requestedPath =
+            event && event.detail && typeof event.detail.filePath === "string"
+              ? event.detail.filePath
+              : "<unknown>";
+          await this.reportScriptError(requestedPath, error, "script-required-assets-request");
+        });
+      });
+
       this.addMarkdownPlayActions();
       this.addCandidateViewPlayActions();
+      this.addPlayerViewPlayActions();
+
+      this.app.workspace.onLayoutReady(() => {
+        this.addMarkdownPlayActions();
+        this.addCandidateViewPlayActions();
+        this.addPlayerViewPlayActions();
+      });
     }
 
     markdownFileHasScriptHeading(file) {
@@ -159,7 +202,7 @@ register(() => {
       return headings.some(
         (heading) =>
           typeof heading?.heading === "string" &&
-          heading.heading.trim().toLowerCase() === "script"
+          heading.heading.trim().toLowerCase().startsWith("script")
       );
     }
 
@@ -210,8 +253,16 @@ register(() => {
       }
     }
 
-    enforceMarkdownActionOrder(view) {
-      if (!view || !view.containerEl) {
+    getFirstActionBySelector(actionsEl, selector) {
+      if (!actionsEl || !selector) {
+        return null;
+      }
+
+      return actionsEl.querySelector(selector);
+    }
+
+    enforceMoviActionOrder(view, moviActionClass) {
+      if (!view || !view.containerEl || !moviActionClass) {
         return;
       }
 
@@ -220,39 +271,50 @@ register(() => {
         return;
       }
 
-      const moviActionEl = actionsEl.querySelector(
-        `.${this.markdownMoviPlayActionClass}`
+      const markdownActionEl = this.getFirstActionBySelector(
+        actionsEl,
+        '.view-action.gptviz-return-to-note-action, .view-action[aria-label="Return to note"], .view-action[title="Return to note"], .view-action.mod-source-view, .view-action[aria-label*="Source mode"], .view-action[aria-label*="Live Preview"], .view-action[aria-label*="Reading view"], .view-action[aria-label*="Edit mode"]'
       );
-      if (!moviActionEl) {
-        return;
-      }
-
-      const systemToggler = actionsEl.querySelector(
-        '.view-action.mod-source-view, .view-action[aria-label*="Source mode"], .view-action[aria-label*="Live Preview"], .view-action[aria-label*="Reading view"], .view-action[aria-label*="Edit mode"]'
+      const imageActionEl = this.getFirstActionBySelector(
+        actionsEl,
+        '.view-action.gptviz-review-images-action, .view-action.gptviz-shared-review-action, .view-action[aria-label="GPTViz Candidate View"], .view-action[title="GPTViz Candidate View"]'
       );
-      const reviewActionEl = actionsEl.querySelector(
-        '.gptviz-review-images-action, .view-action[aria-label="GPTViz Candidate View"], .view-action[title="GPTViz Candidate View"]'
+      const moviActionEl = this.getFirstActionBySelector(
+        actionsEl,
+        `.${moviActionClass}, .view-action[aria-label="Movi Play"], .view-action[title="Movi Play"]`
       );
-      const optionsActionEl = actionsEl.querySelector(
+      const dependencyActionEl = this.getFirstActionBySelector(
+        actionsEl,
+        '.view-action.gptviz-dependency-check-action, .view-action.gptviz-shared-dependency-action, .view-action[aria-label="GPTViz Validate Dependencies"], .view-action[title="GPTViz Validate Dependencies"]'
+      );
+      const optionsActionEl = this.getFirstActionBySelector(
+        actionsEl,
         '.view-action.mod-options, .view-action[aria-label*="More options"], .view-action[aria-label*="Options"]'
       );
 
-      if (systemToggler) {
-        let insertAfter = systemToggler;
+      const orderedCore = [
+        markdownActionEl,
+        imageActionEl,
+        moviActionEl,
+        dependencyActionEl,
+      ].filter(Boolean);
 
-        if (reviewActionEl) {
-          actionsEl.insertBefore(reviewActionEl, insertAfter.nextSibling);
-          insertAfter = reviewActionEl;
-        }
-
-        actionsEl.insertBefore(moviActionEl, insertAfter.nextSibling);
-      } else if (reviewActionEl) {
-        actionsEl.insertBefore(moviActionEl, reviewActionEl.nextSibling);
-      } else {
-        actionsEl.appendChild(moviActionEl);
+      if (orderedCore.length === 0) {
+        return;
       }
 
-      if (optionsActionEl) {
+      let insertBefore = optionsActionEl || null;
+      for (let i = orderedCore.length - 1; i >= 0; i -= 1) {
+        const actionEl = orderedCore[i];
+        if (insertBefore) {
+          actionsEl.insertBefore(actionEl, insertBefore);
+        } else {
+          actionsEl.appendChild(actionEl);
+        }
+        insertBefore = actionEl;
+      }
+
+      if (optionsActionEl && actionsEl.lastChild !== optionsActionEl) {
         actionsEl.appendChild(optionsActionEl);
       }
     }
@@ -278,6 +340,18 @@ register(() => {
         typeof view.getViewType === "function" &&
         view.getViewType() === "gptviz-candidates"
       );
+    }
+
+    isPlayerView(view) {
+      return (
+        view &&
+        typeof view.getViewType === "function" &&
+        view.getViewType() === Movi.MOVI_PLAYER_VIEW_TYPE
+      );
+    }
+
+    setPlayerViewActive(active) {
+      document.body.classList.toggle("movi-player-active", Boolean(active));
     }
 
     normalizeAssetRef(assetRef) {
@@ -355,12 +429,12 @@ register(() => {
           const rawLine = lines[i];
           const trimmed = rawLine.trim();
 
-          if (/^#\s*Script\s*$/i.test(trimmed)) {
+          if (/^#{1,6}\s*Script\b.*$/i.test(trimmed)) {
             inScript = true;
             continue;
           }
 
-          if (inScript && /^#\s+/.test(rawLine)) {
+          if (inScript && /^#{1,6}\s+/.test(rawLine)) {
             inScript = false;
             continue;
           }
@@ -423,6 +497,60 @@ register(() => {
       }
     }
 
+    removePlayerViewPlayActions() {
+      for (const leaf of this.app.workspace.getLeavesOfType(Movi.MOVI_PLAYER_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (!this.isPlayerView(view)) {
+          continue;
+        }
+
+        view.containerEl
+          .querySelectorAll(
+            `.${this.playerMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
+          )
+          .forEach((action) => action.remove());
+      }
+    }
+
+    async playSourceFromPlayerView(view) {
+      const sourcePath =
+        (view && view.movie && view.movie.sourcePath) ||
+        this.lastPlayedScriptPath;
+
+      if (!sourcePath) {
+        new Notice("movi: No source script is loaded in Player View.");
+        return;
+      }
+
+      const file = this.app.vault.getAbstractFileByPath(sourcePath);
+      if (!file) {
+        new Notice(`movi: Source file not found: ${sourcePath}`);
+        return;
+      }
+
+      await this.playScriptFile(file);
+    }
+
+    addPlayerViewPlayActions() {
+      for (const leaf of this.app.workspace.getLeavesOfType(Movi.MOVI_PLAYER_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (!this.isPlayerView(view)) {
+          continue;
+        }
+
+        const existingActions = view.containerEl.querySelectorAll(
+          `.${this.playerMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
+        );
+        existingActions.forEach((action) => action.remove());
+
+        if (typeof view.startModeRibbonSync === "function") {
+          view.startModeRibbonSync();
+        } else if (typeof view.ensureModeRibbon === "function") {
+          view.ensureModeRibbon();
+        }
+      }
+    }
+
     addCandidateViewPlayActions() {
       for (const leaf of this.app.workspace.getLeavesOfType("gptviz-candidates")) {
         const view = leaf.view;
@@ -434,22 +562,6 @@ register(() => {
           `.${this.candidateMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
         );
         existingActions.forEach((action) => action.remove());
-
-        if (typeof view.addAction !== "function") {
-          continue;
-        }
-
-        const actionEl = view.addAction("film", "Movi Play", async () => {
-          await this.showScriptsUsingCurrentCandidateAsset(view);
-        });
-
-        if (!actionEl) {
-          continue;
-        }
-
-        actionEl.classList.add(this.candidateMoviPlayActionClass);
-        actionEl.setAttribute("aria-label", "Movi Play");
-        actionEl.setAttribute("title", "Movi Play");
       }
     }
 
@@ -464,45 +576,97 @@ register(() => {
           `.${this.markdownMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
         );
         existingActions.forEach((action) => action.remove());
+      }
+    }
 
-        if (typeof view.addAction !== "function") {
-          continue;
+    async handleScriptRequiredAssetsRequest(event) {
+      const detail = event && event.detail ? event.detail : null;
+      const filePath = detail && typeof detail.filePath === "string"
+        ? detail.filePath
+        : "";
+      const resolve = detail && typeof detail.resolve === "function"
+        ? detail.resolve
+        : null;
+      const reject = detail && typeof detail.reject === "function"
+        ? detail.reject
+        : null;
+
+      try {
+        const assets = await this.getScriptRequiredAssetsForFilePath(filePath);
+        if (resolve) {
+          resolve({
+            ok: true,
+            requiredAssets: assets,
+          });
         }
+      } catch (error) {
+        if (reject) {
+          reject(error);
+          return;
+        }
+        throw error;
+      }
+    }
 
-        const actionEl = view.addAction("film", "Movi Play", async () => {
-          if (!this.markdownFileHasScriptHeading(view.file)) {
+    async getScriptRequiredAssetsForFilePath(filePath) {
+      const path = String(filePath || "").trim();
+      if (!path) {
+        return [];
+      }
+
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!file || file.extension !== "md") {
+        return [];
+      }
+
+      const text = await this.app.vault.cachedRead(file);
+      const parsed = Movi.Parser.parseMarkdown(text, file.path);
+      return Array.isArray(parsed.requiredAssets) ? parsed.requiredAssets : [];
+    }
+
+    async handleMovieModeRequest(event) {
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+
+      const requestedPath =
+        event && event.detail && typeof event.detail.filePath === "string"
+          ? event.detail.filePath
+          : "";
+
+      if (requestedPath) {
+        const file = this.app.vault.getAbstractFileByPath(requestedPath);
+        const extension = String(file && file.extension ? file.extension : "").toLowerCase();
+
+        if (file && (extension === "md" || extension === "ms")) {
+          try {
+            await this.playScriptFile(file);
+            return;
+          } catch (error) {
+            await this.reportScriptError(file.path, error, "movie-mode-request");
             return;
           }
-
-          if (this.app.workspace.activeLeaf !== leaf) {
-            await this.app.workspace.revealLeaf(leaf);
-          }
-
-          const commandRan = await this.app.commands.executeCommandById(
-            "movi-play-active-script"
-          );
-
-          if (!commandRan) {
-            throw new Error(
-              "Command not found or unavailable: movi-play-active-script"
-            );
-          }
-        });
-
-        if (!actionEl) {
-          continue;
         }
-
-        actionEl.classList.add(this.markdownMoviPlayActionClass);
-        actionEl.setAttribute("aria-label", "Movi Play");
-        actionEl.setAttribute("title", "Movi Play");
-        this.setMarkdownPlayActionEnabled(
-          actionEl,
-          this.markdownFileHasScriptHeading(view.file)
-        );
-
-        this.enforceMarkdownActionOrder(view);
       }
+
+      await this.playActiveScript();
+    }
+
+    async playScriptFile(file) {
+      const text = await this.app.vault.cachedRead(file);
+      const parsed = Movi.Parser.parseMarkdown(text, file.path);
+      const actions = await this.preparePlaybackActions(parsed, file.path);
+
+      const view = await this.getOrCreatePlayerView();
+      this.lastPlayedScriptPath = file.path;
+      view.loadMovie({ sourcePath: file.path, actions });
+      view.play();
+
+      await this.logger.info("play", "movi playback started", {
+        category: "Player",
+        code: "MPLAY_OK",
+        file: file.path,
+      });
     }
 
     async playActiveScript() {
@@ -519,21 +683,7 @@ register(() => {
       }
 
       try {
-        const text = await this.app.vault.cachedRead(file);
-        const parsed = Movi.Parser.parseMarkdown(text, file.path);
-        const actions = await this.preparePlaybackActions(parsed, file.path);
-
-        const view = await this.getOrCreatePlayerView();
-        view.loadMovie({ sourcePath: file.path, actions });
-        view.play();
-
-        const msg = `movi: Playing ${actions.length} action${actions.length === 1 ? "" : "s"}.`;
-        new Notice(msg);
-        await this.logger.info("play", msg, {
-          category: "Player",
-          code: "MPLAY_OK",
-          file: file.path,
-        });
+        await this.playScriptFile(file);
       } catch (error) {
         await this.reportScriptError(file.path, error, "play");
       }
@@ -776,11 +926,13 @@ register(() => {
 
       let leaf = leaves[0];
       if (!leaf) {
-        leaf = this.app.workspace.getRightLeaf(false);
+        leaf = this.app.workspace.getLeaf("tab");
         await leaf.setViewState({ type, active: true });
       }
 
-      this.app.workspace.revealLeaf(leaf);
+      await this.app.workspace.revealLeaf(leaf);
+      this.setPlayerViewActive(true);
+      this.addPlayerViewPlayActions();
       return leaf.view;
     }
 
@@ -831,6 +983,13 @@ register(() => {
 
     async onunload() {
       this.removeCandidateViewPlayActions();
+      this.removePlayerViewPlayActions();
+      this.setPlayerViewActive(false);
+
+      if (this.playerViewStyle) {
+        this.playerViewStyle.remove();
+        this.playerViewStyle = null;
+      }
 
       const type = Movi.MOVI_PLAYER_VIEW_TYPE;
       const leaves = this.app.workspace.getLeavesOfType(type);
