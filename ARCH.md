@@ -173,7 +173,7 @@ Error entries should include file path, line/column when available, category, co
 
 Logging:
 
-- Each plugin load appends a new run header to vault-root `movi.log` (blank line, timestamp, blank line).
+- Each plugin load appends a new run header to `movi/movi.log` (blank line, timestamp, blank line).
 - Each reported error appends timestamp, operation context, category/code, message, and stack if available.
 - `movi.log` is trimmed on each append to a small configurable cap (default 6 KB), keeping the newest entries and trimming at a newline boundary.
 - If log writing fails, report only via `console.error()` and never recurse.

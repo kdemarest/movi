@@ -1,6 +1,10 @@
 register(() => {
   const { Plugin, Notice, MarkdownView, Modal, normalizePath } = require("obsidian");
 
+  // Vault folder holding all content (markdown scripts, images, config, language files).
+  const CONTENT_ROOT = "canvid";
+  const contentPath = relativePath => `${CONTENT_ROOT}/${relativePath}`;
+
   class ScriptUsageModal extends Modal {
     constructor(app, assetName, rows) {
       super(app);
@@ -61,7 +65,7 @@ register(() => {
   class MoviPlugin extends Plugin {
     async onload() {
       this.logger = new Movi.Logger(this.app, {
-        logPath: "movi.log",
+        logPath: "movi/movi.log",
         maxBytes: 6144,
       });
 
@@ -417,7 +421,8 @@ register(() => {
       }
 
       const results = [];
-      const markdownFiles = this.app.vault.getMarkdownFiles();
+      const markdownFiles = this.app.vault.getMarkdownFiles()
+        .filter(file => file.path.startsWith(contentPath("")));
 
       for (const file of markdownFiles) {
         const text = await this.app.vault.cachedRead(file);
@@ -913,7 +918,7 @@ register(() => {
       const hasDotExt = /\.[A-Za-z0-9]+$/.test(raw);
 
       if (raw.startsWith("/")) {
-        const abs = normalizePath(raw.replace(/^\/+/, ""));
+        const abs = normalizePath(contentPath(raw.replace(/^\/+/, "")));
         candidates.push(abs);
         if (!hasDotExt) {
           candidates.push(`${abs}.PNG`);
@@ -929,7 +934,7 @@ register(() => {
           }
         }
 
-        const root = normalizePath(raw);
+        const root = normalizePath(contentPath(raw));
         candidates.push(root);
         if (!hasDotExt) {
           candidates.push(`${root}.PNG`);
@@ -1020,7 +1025,7 @@ register(() => {
     }
 
     async getCurrentLanguage() {
-      const configPath = "_config.json";
+      const configPath = contentPath("_config.json");
 
       if (!(await this.app.vault.adapter.exists(configPath))) {
         return "English";
@@ -1060,7 +1065,7 @@ register(() => {
       const name = String(language || "").trim();
       if (!name) return {};
 
-      const languagePath = `${name}.txt`;
+      const languagePath = contentPath(`${name}.txt`);
       if (!(await this.app.vault.adapter.exists(languagePath))) {
         return {};
       }

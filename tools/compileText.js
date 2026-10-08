@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const vaultRoot = path.resolve(__dirname, "..", "..");
+const contentRoot = path.resolve(__dirname, "..", "..", "canvid");
 const skipDirs = new Set([".git", ".obsidian", "node_modules", "candidates"]);
 
 function parseLangFile(text) {
@@ -108,12 +108,12 @@ function extractCaptions(bodyLines) {
 }
 
 function main() {
-  const scriptFiles = findScriptFiles(vaultRoot);
+  const scriptFiles = findScriptFiles(contentRoot);
   const collected = new Map();
   const conflicts = [];
 
   for (const file of scriptFiles) {
-    const relativeFile = path.relative(vaultRoot, file);
+    const relativeFile = path.relative(contentRoot, file);
     const text = fs.readFileSync(file, "utf8");
     const captions = extractCaptions(extractScriptSectionLines(text));
 
@@ -128,7 +128,7 @@ function main() {
     }
   }
 
-  const englishPath = path.join(vaultRoot, "English.txt");
+  const englishPath = path.join(contentRoot, "English.txt");
   const existingMap = fs.existsSync(englishPath)
     ? parseLangFile(fs.readFileSync(englishPath, "utf8"))
     : {};
