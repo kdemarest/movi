@@ -54,7 +54,23 @@ register(() => {
       const requiredAssets = [];
       const seenRequiredAssets = new Set();
       const showByName = {};
+      const usedLabels = new Set();
       let autoNameCounter = 1;
+      let pendingAnchor = null;
+
+      const claimLabel = (name, filePath, line) => {
+        if (!name) return;
+        if (usedLabels.has(name)) {
+          throw new ParserError({
+            code: "MPARSE008",
+            file: filePath,
+            line,
+            column: 1,
+            message: `Duplicate label '${name}'. Labels must be unique.`,
+          });
+        }
+        usedLabels.add(name);
+      };
 
       for (let i = 0; i < lines.length; i += 1) {
         const raw = lines[i];
@@ -62,21 +78,55 @@ register(() => {
         if (!trimmed) continue;
         if (/^#/.test(trimmed)) continue;
 
+        const atMatch = trimmed.match(/^at\s+([A-Za-z_][A-Za-z0-9_]*)(?:([+-][0-9]*\.?[0-9]+)s|\s+([0-9]*\.?[0-9]+)%)?$/i);
+        if (atMatch) {
+          if (pendingAnchor) {
+            throw new ParserError({
+              code: "MPARSE012",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `Dangling 'at ${pendingAnchor.label}' at line ${pendingAnchor.line} has no following command to apply to.`,
+            });
+          }
+
+          const label = atMatch[1];
+          if (!usedLabels.has(label)) {
+            throw new ParserError({
+              code: "MPARSE011",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `Unknown label '${label}' referenced by 'at'. Labels must be defined with 'as <name>' before they can be used.`,
+            });
+          }
+
+          pendingAnchor = {
+            label,
+            offsetSeconds: atMatch[2] !== undefined ? parseFloat(atMatch[2]) : null,
+            percent: atMatch[3] !== undefined ? parseFloat(atMatch[3]) : null,
+            line: startLine + i,
+          };
+          continue;
+        }
+
         const showMatch = trimmed.match(/^show\s+(.+?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s+for\s+([0-9]*\.?[0-9]+s)$/i);
         if (showMatch) {
+          if (pendingAnchor) {
+            throw new ParserError({
+              code: "MPARSE013",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `'at ${pendingAnchor.label}' at line ${pendingAnchor.line} must be followed by 'caption'; found 'show' instead.`,
+            });
+          }
+
           const image = showMatch[1].trim();
           const explicitName = showMatch[2] ? showMatch[2].trim() : "";
           const name = explicitName || `shot${autoNameCounter++}`;
 
-          if (Object.prototype.hasOwnProperty.call(showByName, name)) {
-            throw new ParserError({
-              code: "MPARSE008",
-              file: filePath,
-              line: startLine + i,
-              column: 1,
-              message: `Duplicate show name '${name}'. Show names must be unique.`,
-            });
-          }
+          claimLabel(name, filePath, startLine + i);
 
           const duration = Parser.parseDuration(showMatch[3], filePath, startLine + i);
           const action = {
@@ -98,11 +148,22 @@ register(() => {
           continue;
         }
 
-        const zoomMatch = trimmed.match(/^zoom\s+([A-Za-z_][A-Za-z0-9_]*)\s+to\s+([0-9]*\.?[0-9]+)\s+for\s+([0-9]*\.?[0-9]+s)$/i);
+        const zoomMatch = trimmed.match(/^zoom\s+([A-Za-z_][A-Za-z0-9_]*)\s+to\s+([0-9]*\.?[0-9]+)\s+for\s+([0-9]*\.?[0-9]+s)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/i);
         if (zoomMatch) {
+          if (pendingAnchor) {
+            throw new ParserError({
+              code: "MPARSE013",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `'at ${pendingAnchor.label}' at line ${pendingAnchor.line} must be followed by 'caption'; found 'zoom' instead.`,
+            });
+          }
+
           const targetName = zoomMatch[1];
           const zoomEnd = Parser.parseZoomFactor(zoomMatch[2], filePath, startLine + i);
           const duration = Parser.parseDuration(zoomMatch[3], filePath, startLine + i);
+          const name = zoomMatch[4] || "";
 
           const lastShow = Parser.findLastShow(actions);
           if (!lastShow) {
@@ -115,14 +176,80 @@ register(() => {
             });
           }
 
+          claimLabel(name, filePath, startLine + i);
+
           actions.push({
             type: "zoom",
             targetName,
             zoomEnd,
             durationSeconds: duration,
+            name,
             line: startLine + i,
             column: 1,
           });
+          continue;
+        }
+
+        const cutMatch = trimmed.match(/^cut(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s+at\s+([0-9]*\.?[0-9]+)\s+for\s+([0-9]*\.?[0-9]+s)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/i);
+        if (cutMatch) {
+          if (pendingAnchor) {
+            throw new ParserError({
+              code: "MPARSE013",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `'at ${pendingAnchor.label}' at line ${pendingAnchor.line} must be followed by 'caption'; found 'cut' instead.`,
+            });
+          }
+
+          const targetName = cutMatch[1] || "";
+          const zoomEnd = Parser.parseZoomFactor(cutMatch[2], filePath, startLine + i);
+          const duration = Parser.parseDuration(cutMatch[3], filePath, startLine + i);
+          const name = cutMatch[4] || "";
+
+          const lastShow = Parser.findLastShow(actions);
+          if (!lastShow) {
+            throw new ParserError({
+              code: "MPARSE010",
+              file: filePath,
+              line: startLine + i,
+              column: 1,
+              message: `Cut requires a prior show action.`,
+            });
+          }
+
+          claimLabel(name, filePath, startLine + i);
+
+          actions.push({
+            type: "cut",
+            targetName,
+            zoomEnd,
+            durationSeconds: duration,
+            name,
+            line: startLine + i,
+            column: 1,
+          });
+          continue;
+        }
+
+        const captionMatch = trimmed.match(/^caption\s+([0-9]*\.?[0-9]+s)\s+([A-Za-z_][A-Za-z0-9_]*)\s+"((?:[^"\\]|\\.)*)"$/i);
+        if (captionMatch) {
+          const duration = Parser.parseDuration(captionMatch[1], filePath, startLine + i);
+          const key = captionMatch[2];
+          const text = captionMatch[3].replace(/\\(.)/g, (full, ch) => (ch === "n" ? "\n" : ch));
+
+          actions.push({
+            type: "caption",
+            key,
+            text,
+            durationSeconds: duration,
+            anchorLabel: pendingAnchor ? pendingAnchor.label : "",
+            anchorOffsetSeconds: pendingAnchor ? pendingAnchor.offsetSeconds : null,
+            anchorPercent: pendingAnchor ? pendingAnchor.percent : null,
+            line: startLine + i,
+            column: 1,
+          });
+          pendingAnchor = null;
           continue;
         }
 
@@ -131,7 +258,17 @@ register(() => {
           file: filePath,
           line: startLine + i,
           column: 1,
-          message: `Unknown or invalid script command: '${trimmed}'. Expected: show <image> [as <name>] for <duration>s OR zoom <name> to <level> for <duration>s`,
+          message: `Unknown or invalid script command: '${trimmed}'. Expected: show <image> [as <name>] for <duration>s OR zoom <name> to <level> for <duration>s [as <name>] OR cut [<mark>] at <level> for <duration>s [as <name>] OR caption <duration>s <key> "<text>" OR at <label>[+/-<offset>s | <percent>%]`,
+        });
+      }
+
+      if (pendingAnchor) {
+        throw new ParserError({
+          code: "MPARSE012",
+          file: filePath,
+          line: pendingAnchor.line,
+          column: 1,
+          message: `Dangling 'at ${pendingAnchor.label}' at line ${pendingAnchor.line} has no following command to apply to.`,
         });
       }
 
