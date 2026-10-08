@@ -139,12 +139,6 @@ First runnable milestone: execute a `# Script` section in Markdown that does onl
 - movi listens for `gptviz:movie-mode-request` and switches to movie playback by running the requested `.md`/`.ms` script path when provided, or falling back to active-script playback.
 - Player View opens/reuses a tab leaf (not right-side split) and applies candidate-style active-view mobile navbar suppression while the Player View is active, so playback controls use the full mobile screen footprint.
 
-### Project-local watcher isolation
-
-- Optional watcher flow is project-local to movi:
-  - scripts: `movi/watch-runbash.sh`, `movi/start-watcher.sh`, `movi/stop-watcher.sh`
-  - files: `movi/RunBash.ai`, `movi/RunBash.log`, `movi/RunBash.last.log`, `movi/.runbash-watcher.heartbeat`
-
 ## Planned
 
 movi is a script-driven still-image movie system implemented as an Obsidian plugin. Markdown script is the source of truth. A movie is defined by script commands associated with a Markdown file and is played in a single logical movi Player View.
@@ -405,7 +399,7 @@ In-app blocking/persistent error surfaces are deferred until after the first ver
 
 ## Runtime logging
 
-Each plugin load appends a new run header to the vault-root `movi.log` file: a blank line, the run date/time, and a blank line.
+Each plugin load appends a new run header to the `movi/movi.log` file: a blank line, the run date/time, and a blank line.
 
 Each reported error is appended with its timestamp, operation context, category/code, message, and stack when available.
 

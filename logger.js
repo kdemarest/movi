@@ -2,7 +2,7 @@ register(() => {
   class Logger {
     constructor(app, options) {
       this.app = app;
-      this.logPath = (options && options.logPath) || "movi.log";
+      this.logPath = (options && options.logPath) || "movi/movi.log";
       this.maxBytes = (options && options.maxBytes) || 6144;
     }
 
