@@ -158,12 +158,140 @@ register(() => {
         assertEqual(parsed.actions[1].durationSeconds, 1.5, "zoom duration field");
       });
 
+      cases.push(function testZoomSupportsAsLabel() {
+        const md = "# Script\nshow hero.png for 3s\nzoom ring to 1.8 for 1.5s as myZoom\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions[1].name, "myZoom", "zoom label field");
+      });
+
+      cases.push(function testCutSupportsAsLabel() {
+        const md = "# Script\nshow hero.png for 3s\ncut ring at 1.5 for 1s as myCut\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions[1].name, "myCut", "cut label field");
+      });
+
+      cases.push(function testAtLineAnchorsFollowingCaption() {
+        const md = '# Script\nshow hero.png for 3s\ncut ring at 1.5 for 1s as myCut\nat myCut+2s\ncaption 1s greeting "Hi"\n';
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        const caption = parsed.actions[2];
+        assertEqual(caption.anchorLabel, "myCut", "caption anchor label");
+        assertEqual(caption.anchorOffsetSeconds, 2, "caption anchor offset");
+      });
+
+      cases.push(function testAtLinePercentForm() {
+        const md = '# Script\nshow hero.png for 3s\ncut ring at 1.5 for 1s as myCut\nat myCut 40%\ncaption 1s greeting "Hi"\n';
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions[2].anchorPercent, 40, "caption anchor percent");
+      });
+
+      cases.push(function testCaptionWithoutAtHasNoAnchorLabel() {
+        const parsed = Movi.Parser.parseMarkdown('# Script\ncaption 1s greeting "Hi"\n', "demo.md");
+        assertEqual(parsed.actions[0].anchorLabel, "", "unanchored caption label");
+      });
+
+      cases.push(function testAtUnknownLabelErrors() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown('# Script\nshow hero.png for 3s\nat nope\ncaption 1s greeting "Hi"\n', "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE011", "unknown label code");
+        }
+        assertTrue(saw, "at with unknown label should throw");
+      });
+
+      cases.push(function testAtMustPrecedeCaption() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown("# Script\nshow hero.png as s1 for 3s\nat s1\nshow other.png for 1s\n", "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE013", "at-before-non-caption code");
+        }
+        assertTrue(saw, "at before show should throw");
+      });
+
+      cases.push(function testDanglingAtErrors() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown("# Script\nshow hero.png as s1 for 3s\nat s1\n", "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE012", "dangling at code");
+        }
+        assertTrue(saw, "dangling at should throw");
+      });
+
+      cases.push(function testDuplicateLabelAcrossCommandsErrors() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown("# Script\nshow hero.png as dup for 3s\nzoom ring to 1.5 for 1s as dup\n", "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE008", "duplicate label code");
+        }
+        assertTrue(saw, "duplicate label across show/zoom should throw");
+      });
+
       cases.push(function testParseMultipleZoomActionsAfterOneShow() {
         const parsed = Movi.Parser.parseMarkdown("# Script\nshow hero.png for 3s\nzoom aeku_head to 1.8 for 1.5s\nzoom aeono_head to 1.8 for 1.5s\n", "demo.md");
         assertEqual(parsed.actions.length, 3, "three actions expected");
         assertEqual(parsed.actions[1].type, "zoom", "second action zoom");
         assertEqual(parsed.actions[2].type, "zoom", "third action zoom");
         assertEqual(parsed.actions[2].targetName, "aeono_head", "third zoom target");
+      });
+
+      cases.push(function testParseCutWithMark() {
+        const md = "# Script\nshow hero.png for 3s\ncut ring at 1.5 for 1s\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions.length, 2, "two actions expected");
+        assertEqual(parsed.actions[1].type, "cut", "second action type");
+        assertEqual(parsed.actions[1].targetName, "ring", "cut target field");
+        assertEqual(parsed.actions[1].zoomEnd, 1.5, "cut zoom level field");
+        assertEqual(parsed.actions[1].durationSeconds, 1, "cut duration field");
+      });
+
+      cases.push(function testParseCutWithoutMark() {
+        const md = "# Script\nshow hero.png for 3s\ncut at 1 for 0.5s\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions.length, 2, "two actions expected");
+        assertEqual(parsed.actions[1].type, "cut", "second action type");
+        assertEqual(parsed.actions[1].targetName, "", "cut target field should be empty when mark omitted");
+      });
+
+      cases.push(function testCutWithoutAnyShowStillErrors() {
+        let saw = false;
+        try {
+          Movi.Parser.parseMarkdown("# Script\ncut ring at 1.5 for 1s\n", "demo.md");
+        } catch (error) {
+          saw = true;
+          assertEqual(error.code, "MPARSE010", "cut-without-show code");
+          assertEqual(error.line, 2, "cut-without-show line");
+        }
+        assertTrue(saw, "cut without show should throw");
+      });
+
+      cases.push(function testParseCaptionCommand() {
+        const md = '# Script\nshow hero.png for 3s\ncaption 2s greeting "Hello there, welcome."\n';
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions.length, 2, "two actions expected");
+        assertEqual(parsed.actions[1].type, "caption", "second action type");
+        assertEqual(parsed.actions[1].key, "greeting", "caption key field");
+        assertEqual(parsed.actions[1].text, "Hello there, welcome.", "caption text field");
+        assertEqual(parsed.actions[1].durationSeconds, 2, "caption duration field");
+      });
+
+      cases.push(function testParseCaptionDoesNotRequirePriorShow() {
+        const md = '# Script\ncaption 1s greeting "Hello."\n';
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions.length, 1, "one action expected");
+        assertEqual(parsed.actions[0].type, "caption", "action type");
+      });
+
+      cases.push(function testParseCaptionUnescapesQuotesAndNewlines() {
+        const md = '# Script\ncaption 1s line1 "She said, \\"hi\\".\\nSee you soon."\n';
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
+        assertEqual(parsed.actions[0].text, 'She said, "hi".\nSee you soon.', "caption text should unescape quotes and newlines");
       });
 
       cases.push(function testZoomWithoutAnyShowStillErrors() {

@@ -23,6 +23,9 @@ register(() => {
       this.frameEl = null;
       this.zoomDotEl = null;
       this.zoomDotAnimId = null;
+      this.captionEl = null;
+      this.captionWindows = [];
+      this.labelTimings = {};
       this.currentTx = 0;
       this.currentTy = 0;
       this.currentScale = 1;
@@ -333,6 +336,20 @@ register(() => {
       zoomDot.style.display = "none";
       zoomDot.style.zIndex = "3";
 
+      const caption = frame.createDiv({ cls: "movi-caption" });
+      caption.style.position = "absolute";
+      caption.style.left = "0";
+      caption.style.right = "0";
+      caption.style.bottom = "0";
+      caption.style.padding = "0.6em 1em";
+      caption.style.textAlign = "center";
+      caption.style.color = "#fff";
+      caption.style.background = "rgba(0, 0, 0, 0.55)";
+      caption.style.whiteSpace = "pre-wrap";
+      caption.style.pointerEvents = "none";
+      caption.style.display = "none";
+      caption.style.zIndex = "4";
+
       const status = root.createDiv({ cls: "movi-status" });
       status.style.marginTop = "10px";
       status.style.textAlign = "center";
@@ -437,6 +454,7 @@ register(() => {
       this.statusEl = status;
       this.frameEl = frame;
       this.zoomDotEl = zoomDot;
+      this.captionEl = caption;
     }
 
     updatePlayPauseButton() {
@@ -484,6 +502,8 @@ register(() => {
         this.imageEl.style.transform = "translate(0px, 0px) scale(1)";
       }
 
+      this.hideCaption();
+
       this.currentTx = 0;
       this.currentTy = 0;
       this.currentScale = 1;
@@ -503,6 +523,39 @@ register(() => {
         running += this.getTimelineActionDurationMs(actions, i);
       }
       this.totalDurationMs = running;
+
+      this.labelTimings = {};
+      for (let i = 0; i < actions.length; i += 1) {
+        const name = actions[i] && actions[i].name;
+        if (name) {
+          this.labelTimings[name] = {
+            startMs: this.actionStartTimes[i],
+            durationMs: this.getTimelineActionDurationMs(actions, i),
+          };
+        }
+      }
+
+      const captions = movie && Array.isArray(movie.captions) ? movie.captions : [];
+      this.captionWindows = captions
+        .map(caption => {
+          const anchorStartMs = caption.anchorIndex >= 0 ? (this.actionStartTimes[caption.anchorIndex] || 0) : 0;
+
+          let startMs = anchorStartMs;
+          if (Number.isFinite(caption.anchorOffsetSeconds)) {
+            startMs = anchorStartMs + caption.anchorOffsetSeconds * 1000;
+          } else if (Number.isFinite(caption.anchorPercent)) {
+            const anchorDurationMs = caption.anchorIndex >= 0
+              ? this.getTimelineActionDurationMs(actions, caption.anchorIndex)
+              : 0;
+            startMs = anchorStartMs + (caption.anchorPercent / 100) * anchorDurationMs;
+          }
+          startMs = Math.max(0, startMs);
+
+          const rawEndMs = startMs + Math.max(1, Math.floor(Number(caption.durationSeconds || 0) * 1000));
+          const endMs = Math.min(rawEndMs, this.totalDurationMs);
+          return { key: caption.key, text: caption.text, startMs, endMs };
+        })
+        .filter(window => window.endMs > window.startMs);
 
       this.updateStatus("Ready");
       this.updatePlayPauseButton();
@@ -611,6 +664,15 @@ register(() => {
         return;
       }
 
+      if (action.type === "cut") {
+        this.timerId = window.setTimeout(() => {
+          this.currentIndex += 1;
+          this.runCurrentAction();
+        }, remainingMs);
+        this.updateStatus(`Cut ${action.zoomTargetName || "scene"} (${this.currentIndex + 1}/${this.movie.actions.length})`);
+        return;
+      }
+
       this.runCurrentAction();
     }
 
@@ -678,6 +740,15 @@ register(() => {
 
       if (action.type === "zoom") {
         this.runZoomAction(action, durationMs);
+        this.timerId = window.setTimeout(() => {
+          this.currentIndex += 1;
+          this.runCurrentAction();
+        }, durationMs);
+        return;
+      }
+
+      if (action.type === "cut") {
+        this.runCutAction(action);
         this.timerId = window.setTimeout(() => {
           this.currentIndex += 1;
           this.runCurrentAction();
@@ -760,6 +831,7 @@ register(() => {
       this.currentTy = 0;
       this.currentScale = 1;
       this.activeZoomTarget = null;
+      this.hideCaption();
 
       if (this.imageEl) {
         this.imageEl.style.transition = "none";
@@ -776,7 +848,7 @@ register(() => {
           continue;
         }
 
-        if (action.type === "zoom") {
+        if (action.type === "zoom" || action.type === "cut") {
           this.applyZoomInstant(action);
         }
       }
@@ -784,6 +856,9 @@ register(() => {
       const currentAction = actions[indexExclusive];
       if (currentAction && currentAction.type === "show") {
         this.applyShowInstant(currentAction);
+      }
+      if (currentAction && currentAction.type === "cut") {
+        this.applyZoomInstant(currentAction);
       }
     }
 
@@ -906,6 +981,49 @@ register(() => {
       this.updateStatus(`Zoom ${action.zoomTargetName || "target"} (${this.currentIndex + 1}/${this.movie.actions.length})`);
     }
 
+    runCutAction(action) {
+      if (!this.imageEl) return;
+
+      this.stopZoomDotTracking();
+      this.applyZoomInstant(action);
+      this.updateStatus(`Cut ${action.zoomTargetName || "scene"} (${this.currentIndex + 1}/${this.movie.actions.length})`);
+    }
+
+    showCaption(text) {
+      if (!this.captionEl) return;
+      this.captionEl.textContent = String(text || "");
+      this.captionEl.style.display = "block";
+    }
+
+    hideCaption() {
+      if (!this.captionEl) return;
+      this.captionEl.style.display = "none";
+      this.captionEl.textContent = "";
+    }
+
+    getCaptionTextAtMs(ms) {
+      let best = null;
+
+      for (const window of this.captionWindows) {
+        if (ms >= window.startMs && ms < window.endMs) {
+          if (!best || window.startMs > best.startMs) {
+            best = window;
+          }
+        }
+      }
+
+      return best ? best.text : null;
+    }
+
+    updateCaptionForMs(ms) {
+      const text = this.getCaptionTextAtMs(ms);
+      if (text === null) {
+        this.hideCaption();
+        return;
+      }
+      this.showCaption(text);
+    }
+
     resumeZoomAction(zoomTarget, durationMs) {
       if (!this.imageEl || !zoomTarget) {
         this.runCurrentAction();
@@ -1014,6 +1132,8 @@ register(() => {
       if (this.scrubberTimeEl) {
         this.scrubberTimeEl.setText(`${this.formatMs(clamped)} / ${this.formatMs(this.totalDurationMs)}`);
       }
+
+      this.updateCaptionForMs(clamped);
     }
 
     formatMs(ms) {

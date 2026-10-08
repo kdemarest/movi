@@ -655,11 +655,11 @@ register(() => {
     async playScriptFile(file) {
       const text = await this.app.vault.cachedRead(file);
       const parsed = Movi.Parser.parseMarkdown(text, file.path);
-      const actions = await this.preparePlaybackActions(parsed, file.path);
+      const { actions, captions } = await this.preparePlaybackActions(parsed, file.path);
 
       const view = await this.getOrCreatePlayerView();
       this.lastPlayedScriptPath = file.path;
-      view.loadMovie({ sourcePath: file.path, actions });
+      view.loadMovie({ sourcePath: file.path, actions, captions });
       view.play();
 
       await this.logger.info("play", "movi playback started", {
@@ -702,8 +702,13 @@ register(() => {
       }
 
       const out = [];
+      const captions = [];
       const marksByImagePath = {};
+      const labelToIndex = {};
       let currentShow = null;
+      let lastVisualIndex = -1;
+      const currentLanguage = await this.getCurrentLanguage();
+      let languageTextMap = null;
 
       for (let i = 0; i < actions.length; i += 1) {
         const action = actions[i];
@@ -731,6 +736,10 @@ register(() => {
           });
 
           currentShow = out[out.length - 1];
+          lastVisualIndex = out.length - 1;
+          if (action.name) {
+            labelToIndex[action.name] = lastVisualIndex;
+          }
           continue;
         }
 
@@ -772,9 +781,112 @@ register(() => {
             zoomTargetName: targetName,
             zoomAnchorX: mark ? mark.x : 0.5,
             zoomAnchorY: mark ? mark.y : 0.5,
+            name: action.name || "",
             line: action.line,
             column: action.column,
             file: currentShow.file,
+          });
+          lastVisualIndex = out.length - 1;
+          if (action.name) {
+            labelToIndex[action.name] = lastVisualIndex;
+          }
+          continue;
+        }
+
+        if (action.type === "cut") {
+          if (!currentShow || !currentShow.file) {
+            throw {
+              category: "Content",
+              code: "MCONTENT008",
+              line: action.line || 1,
+              column: action.column || 1,
+              message: "Cut requires a current shown image.",
+            };
+          }
+
+          const targetName = String(action.targetName || "").trim();
+          let anchorX = 0.5;
+          let anchorY = 0.5;
+
+          if (targetName) {
+            const imagePath = currentShow.file.path;
+            if (!Object.prototype.hasOwnProperty.call(marksByImagePath, imagePath)) {
+              marksByImagePath[imagePath] = await this.readMarkSidecarForImage(currentShow.file);
+            }
+            const markMap = marksByImagePath[imagePath];
+            const mark = markMap[targetName];
+
+            if (!mark && targetName !== currentShow.name) {
+              throw {
+                category: "Content",
+                code: "MCONTENT008",
+                line: action.line || 1,
+                column: action.column || 1,
+                message: `Cut target '${targetName}' was not found for image '${currentShow.image}'. Expected sidecar '${this.getMarkSidecarPathForImage(currentShow.file)}'.`,
+              };
+            }
+
+            if (mark) {
+              anchorX = mark.x;
+              anchorY = mark.y;
+            }
+          }
+
+          out.push({
+            type: "cut",
+            image: currentShow.image,
+            durationSeconds: action.durationSeconds,
+            zoomEnd: action.zoomEnd,
+            zoomTargetName: targetName,
+            zoomAnchorX: anchorX,
+            zoomAnchorY: anchorY,
+            name: action.name || "",
+            line: action.line,
+            column: action.column,
+            file: currentShow.file,
+          });
+          lastVisualIndex = out.length - 1;
+          if (action.name) {
+            labelToIndex[action.name] = lastVisualIndex;
+          }
+          continue;
+        }
+
+        if (action.type === "caption") {
+          let text = action.text;
+
+          if (currentLanguage !== "English") {
+            if (languageTextMap === null) {
+              languageTextMap = await this.readLanguageFile(currentLanguage);
+            }
+            if (Object.prototype.hasOwnProperty.call(languageTextMap, action.key)) {
+              text = languageTextMap[action.key];
+            }
+          }
+
+          let anchorIndex = lastVisualIndex;
+          if (action.anchorLabel) {
+            if (!Object.prototype.hasOwnProperty.call(labelToIndex, action.anchorLabel)) {
+              throw {
+                category: "Content",
+                code: "MCONTENT012",
+                line: action.line || 1,
+                column: action.column || 1,
+                message: `Internal error: label '${action.anchorLabel}' referenced by 'at' did not resolve to a visual action.`,
+              };
+            }
+            anchorIndex = labelToIndex[action.anchorLabel];
+          }
+
+          captions.push({
+            key: action.key,
+            text,
+            durationSeconds: action.durationSeconds,
+            anchorIndex,
+            anchorOffsetSeconds: action.anchorOffsetSeconds,
+            anchorPercent: action.anchorPercent,
+            line: action.line,
+            column: action.column,
           });
           continue;
         }
@@ -788,7 +900,7 @@ register(() => {
         };
       }
 
-      return out;
+      return { actions: out, captions };
     }
 
     resolveImageFile(imageRef, sourcePath) {
@@ -904,6 +1016,97 @@ register(() => {
         }
         map[name] = { x, y };
       }
+      return map;
+    }
+
+    async getCurrentLanguage() {
+      const configPath = "_config.json";
+
+      if (!(await this.app.vault.adapter.exists(configPath))) {
+        return "English";
+      }
+
+      let text = "";
+      try {
+        text = await this.app.vault.adapter.read(configPath);
+      } catch (error) {
+        throw {
+          category: "Content",
+          code: "MCONTENT009",
+          line: 1,
+          column: 1,
+          message: `Could not read '${configPath}'.`,
+        };
+      }
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        throw {
+          category: "Content",
+          code: "MCONTENT010",
+          line: 1,
+          column: 1,
+          message: `Invalid JSON in '${configPath}'.`,
+        };
+      }
+
+      const language = parsed && typeof parsed.language === "string" ? parsed.language.trim() : "";
+      return language || "English";
+    }
+
+    async readLanguageFile(language) {
+      const name = String(language || "").trim();
+      if (!name) return {};
+
+      const languagePath = `${name}.txt`;
+      if (!(await this.app.vault.adapter.exists(languagePath))) {
+        return {};
+      }
+
+      let text = "";
+      try {
+        text = await this.app.vault.adapter.read(languagePath);
+      } catch (error) {
+        throw {
+          category: "Content",
+          code: "MCONTENT011",
+          line: 1,
+          column: 1,
+          message: `Could not read '${languagePath}'.`,
+        };
+      }
+
+      return this.parseLangFile(text);
+    }
+
+    parseLangFile(text) {
+      const lines = String(text || "").split(/\r?\n/);
+      const map = {};
+      let currentKey = null;
+      let buffer = [];
+
+      const flush = () => {
+        if (currentKey !== null) {
+          map[currentKey] = buffer.join("\n").trim();
+        }
+        buffer = [];
+      };
+
+      for (const line of lines) {
+        const headerMatch = /^([A-Za-z_][A-Za-z0-9_]*):\s*$/.exec(line);
+        if (headerMatch) {
+          flush();
+          currentKey = headerMatch[1];
+          continue;
+        }
+        if (currentKey !== null) {
+          buffer.push(line);
+        }
+      }
+      flush();
+
       return map;
     }
 

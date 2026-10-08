@@ -72,10 +72,38 @@ The v0 surface focuses on proving VID-M01 with minimal syntax.
 - scenes: `scene`, `goto`, `end`, `clear`
 - layers: `image`, `text`, `show`, `hide`, `remove`, `order`, `group`, `ungroup`
 - animation: `move`, `scale`, `rotate`, `fade`, `color`
-- camera: `pan`, `zoom`, `rotateCamera`, `shake`
+- camera: `pan`, `zoom`, `cut`, `rotateCamera`, `shake`
 - timeline: `wait`, `parallel`, `sequence`, `at`, `when`
 - audio: `music`, `sound`, `voice`, `volume`, `stopAudio`
 - events: `event`
+
+## Currently implemented commands (parser v0)
+
+The full command surface above is the long-term target. Today's parser (`parser.js`) only understands the following concrete forms inside a `# Script` section, one statement per line:
+
+```text
+show <image> [as <name>] for <duration>s
+zoom <mark> to <level> for <duration>s [as <name>]
+cut [<mark>] at <level> for <duration>s [as <name>]
+at <label>
+at <label>+<offset>s
+at <label>-<offset>s
+at <label> <percent>%
+caption <duration>s <key> "<text>"
+```
+
+- `show` displays an image and assigns it an optional name (auto-named `shot1`, `shot2`, ... if omitted). A `zoom`/`cut` after it acts on that shown image.
+- `zoom` animates the camera from its current framing to `<level>` scale over `<duration>`, centered on `<mark>` (a named point from the shown image's `.marks.json` sidecar, or the show's own name for a whole-image center zoom). A mark is required.
+- `cut` instantly snaps the camera to `<level>` scale centered on `<mark>`, then holds for `<duration>`. Unlike `zoom`, `<mark>` is optional — omitting it holds the whole scene (center anchor) at `<level>`.
+- `<level>` is a zoom factor greater than 0 (`1` = unzoomed).
+- `<duration>` is a number followed by `s` (for example `2.5s`).
+- `zoom`/`cut` require a prior `show` in the same script. `caption` does not.
+- Every `show`/`zoom`/`cut` can optionally be named with `as <name>` (for `show` this sits before `for`; for `zoom`/`cut` it's a trailing clause). All labels — auto-named shows included — share one namespace and must be unique across the whole script; duplicates are a parse error (`MPARSE008`).
+- `caption` is **not** a blocking step on the visual timeline — it costs zero time there. By default, a caption binds to the start time of whichever `show`/`zoom`/`cut` most recently appeared above it in the script (so placing it right after a shot makes it start *with* that shot, not after it) and stays visible for its own `<duration>`, independent of how long that shot or anything after it takes.
+- An `at <label>` line overrides that default anchor for the **one caption line immediately following it** (then is consumed — it doesn't apply to anything beyond that single next line). It must reference a label already defined earlier via `as <name>` (unknown label: `MPARSE011`), and the line right after it must be a `caption` — `at` before `show`/`zoom`/`cut`, before another `at`, or at the end of the script with nothing following, are all parse errors (`MPARSE013`, `MPARSE012`). Three forms: `at <label>` (same start time as the label, the implicit default made explicit), `at <label>+2s` / `at <label>-2s` (seconds offset from the label's start, glued to the label with no space — a negative offset that would land before `t=0` is clamped to `0`), `at <label> 40%` (40% of the way through the label's own duration — note the space before the `%`, unlike the seconds form).
+- If a caption's window would run past the end of the visual track, it's truncated there — captions never outlive the movie. If two captions' windows overlap, the one that started more recently wins (replaces the other on screen); order (and `at` placement) still matters because of this.
+- `caption` overlays `<text>` on the current frame; it never touches the image or camera. `<key>` is a stable lookup name for localization, and `<text>` is the authored English source — it is authoritative: running `movi/compileText.sh` scans every `# Script` section in the vault and (re)writes `<key>: <text>` entries into vault-root `English.txt`, overwriting by key. `\"` and `\n` are the only supported escapes inside `<text>`.
+- At playback, the active language comes from `_config.json`'s `"language"` key (vault root), defaulting to `English` when absent. When the language is `English`, the caption's inline `<text>` is used directly. For any other language, the resolved text is looked up by `<key>` in vault-root `<language>.txt` (same `key:` / body format as `English.txt`); if that file or key is missing, the inline English `<text>` is used as a fallback. The `<language>.txt` format is expected to evolve.
 
 ## Layer coordinate model (v0)
 
