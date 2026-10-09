@@ -1,4 +1,4 @@
-register(() => {
+unit("parser", [], () => {
   class ParserError extends Error {
     constructor(details) {
       super(details.message || "Parser error");
@@ -365,8 +365,8 @@ register(() => {
     }
   }
 
-  return {
+  Object.assign(Movi, {
     Parser,
     ParserError,
-  };
+  });
 });

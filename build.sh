@@ -1,44 +1,58 @@
 #!/data/data/com.termux/files/usr/bin/bash
-set -e
+set -euo pipefail
 
-# Source ordering convention (no build.sh edits needed):
-# - Keep the Movi/register bootstrap in a file that sorts first (recommended: __register.js).
-# - Keep other files order-independent where possible.
-# - If declaration-time dependency is unavoidable, express it in filename order.
+# Assembles every .js file into one bundle, maps bundle lines back to source files
+# (runtime-code-map.json, used by _lastErr.log), syntax-checks it, then installs it.
+# _preamble.js (unit/runUnits) goes first; every other file is a unit, so their order is irrelevant.
 
-MANIFEST="manifest.json"
+DEST="../.obsidian/plugins/movi"
+STAGING="assembled-plugin.js"
+MAP_PATH="runtime-code-map.json"
 
-if [ ! -f "$MANIFEST" ]; then
-  echo "Build failed: manifest.json not found in $(pwd)" >&2
-  exit 1
-fi
+command -v node >/dev/null || { echo "Build failed: node not found in PATH." >&2; exit 1; }
 
-ID=$(grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' "$MANIFEST" | sed -E 's/.*"([^"]+)"/\1/' | head -n 1)
+mapfile -t UNIT_FILES < <(
+  find . -maxdepth 1 -type f -name '*.js' ! -name "$STAGING" ! -name '_preamble.js' | sort
+)
+JS_FILES=("./_preamble.js" "${UNIT_FILES[@]}")
 
-if [ -z "$ID" ]; then
-  echo "Build failed: manifest.json is missing a valid id" >&2
-  exit 1
-fi
+: > "$STAGING"
+CURRENT_LINE=1
+MAP_ENTRIES=""
 
-DEST="../.obsidian/plugins/$ID"
-mkdir -p "$DEST"
+for FILE in "${JS_FILES[@]}"; do
+  SOURCE_LINES=$(awk 'END { print NR + 0 }' "$FILE")
+  cat "$FILE" >> "$STAGING"
+  printf '\n' >> "$STAGING"
 
-JS_FILES=$(find . -maxdepth 1 -type f -name '*.js' | sort)
-
-if [ -z "$JS_FILES" ]; then
-  echo "Build failed: no source .js files found in $(pwd)" >&2
-  exit 1
-fi
-
-: > "$DEST/main.js"
-for f in $JS_FILES; do
-  cat "$f" >> "$DEST/main.js"
-  echo >> "$DEST/main.js"
+  END_LINE=$((CURRENT_LINE + (SOURCE_LINES > 0 ? SOURCE_LINES - 1 : 0)))
+  ENTRY="    { \"sourcePath\": \"movi/${FILE#./}\", \"sourceStartLine\": 1, \"bundleStartLine\": $CURRENT_LINE, \"bundleEndLine\": $END_LINE }"
+  MAP_ENTRIES+="${MAP_ENTRIES:+,$'\n'}$ENTRY"
+  CURRENT_LINE=$((CURRENT_LINE + SOURCE_LINES + 1))
 done
 
-cp "$MANIFEST" "$DEST/manifest.json"
+# Run every unit now that the whole bundle has loaded.
+printf 'runUnits();\n' >> "$STAGING"
 
+cat > "$MAP_PATH" <<JSON
+{
+  "project": "movi",
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "bundlePath": ".obsidian/plugins/movi/main.js",
+  "entries": [
+$MAP_ENTRIES
+  ]
+}
+JSON
+
+node --check "$STAGING" || { echo "Build failed: syntax check failed for $STAGING." >&2; exit 1; }
+# Load test: construct the plugin and run onload/onunload against a fake Obsidian.
+node ../tools/jsload.js "$STAGING" movi
+
+mkdir -p "$DEST"
+cp "$STAGING" "$DEST/main.js"
+cp manifest.json "$DEST/manifest.json"
 # Tell Obsidian Hot Reload to watch this plugin.
 touch "$DEST/.hotreload"
 
-echo "Built $ID"
+echo "Built movi and wrote $MAP_PATH"
