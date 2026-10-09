@@ -46,8 +46,8 @@ $MAP_ENTRIES
 JSON
 
 node --check "$STAGING" || { echo "Build failed: syntax check failed for $STAGING." >&2; exit 1; }
-# Load test: construct the plugin and run onload/onunload against a fake Obsidian.
-node ../tools/jsload.js "$STAGING" movi
+# Load test (construct, onload, onunload against a fake Obsidian) plus the parser/logger tests.
+node ../tools/jsload.js "$STAGING" movi --test "Movi.Test.runAll()"
 
 mkdir -p "$DEST"
 cp "$STAGING" "$DEST/main.js"
