@@ -1,4 +1,4 @@
-register(() => {
+unit("tests", [], () => {
   function fail(message) {
     throw new Error(message);
   }
@@ -388,9 +388,7 @@ register(() => {
     }
   }
 
-  return {
+  Object.assign(Movi, {
     Test,
-  };
+  });
 });
-
-

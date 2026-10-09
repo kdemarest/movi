@@ -1,69 +1,16 @@
-register(() => {
-  const { Plugin, Notice, MarkdownView, Modal, normalizePath } = require("obsidian");
+// The movi namespace; units add their exports to it.
+const Movi = {};
+
+unit("plugin", [], () => {
+  const { Plugin, Notice, normalizePath } = require("obsidian");
 
   // Vault folder holding all content (markdown scripts, images, config, language files).
   const CONTENT_ROOT = "canvid";
   const contentPath = relativePath => `${CONTENT_ROOT}/${relativePath}`;
 
-  class ScriptUsageModal extends Modal {
-    constructor(app, assetName, rows) {
-      super(app);
-      this.assetName = assetName;
-      this.rows = Array.isArray(rows) ? rows : [];
-    }
-
-    onOpen() {
-      const contentEl = this.contentEl;
-      contentEl.empty();
-      this.titleEl.textContent = `Movi scripts using ${this.assetName}`;
-
-      if (this.rows.length === 0) {
-        contentEl.createEl("p", {
-          text: `No # Script declarations reference ${this.assetName}.`,
-        });
-        return;
-      }
-
-      const list = contentEl.createEl("div");
-      list.style.maxHeight = "60vh";
-      list.style.overflowY = "auto";
-
-      for (const row of this.rows) {
-        const item = list.createEl("div");
-        item.style.display = "grid";
-        item.style.gridTemplateColumns = "1fr";
-        item.style.gap = "0.25em";
-        item.style.padding = "0.6em 0";
-        item.style.borderBottom = "1px solid var(--background-modifier-border)";
-
-        const openButton = item.createEl("button", {
-          text: row.name,
-        });
-        openButton.style.textAlign = "left";
-        openButton.addEventListener("click", async () => {
-          const file = this.app.vault.getAbstractFileByPath(row.path);
-          if (!file) {
-            new Notice(`movi: Script note not found: ${row.path}`);
-            return;
-          }
-
-          await this.app.workspace.getLeaf(true).openFile(file);
-          this.close();
-        });
-
-        item.createEl("div", {
-          text: row.path,
-        });
-      }
-    }
-
-    onClose() {
-      this.contentEl.empty();
-    }
-  }
-
   class MoviPlugin extends Plugin {
     async onload() {
+      this.errorModal = null;
       this.logger = new Movi.Logger(this.app, {
         logPath: "movi/movi.log",
         maxBytes: 6144,
@@ -75,11 +22,6 @@ register(() => {
         code: "MLOAD",
       });
 
-      this.markdownMoviPlayActionClass = "movi-play-action";
-      this.candidateMoviPlayActionClass = "movi-candidate-play-action";
-      this.playerMoviPlayActionClass = "movi-player-play-action";
-      this.playerReturnActionClass = "movi-player-return-action";
-      this.markdownActionRefreshTimer = null;
       this.lastPlayedScriptPath = null;
 
       this.playerViewStyle = document.createElement("style");
@@ -108,9 +50,12 @@ register(() => {
         id: "movi-run-smoke-tests",
         name: "movi Run Smoke Tests",
         callback: async () => {
-          const report = await Movi.Test.runAll(this.logger);
-          const msg = `movi tests: ${report.passed} passed, ${report.failed} failed`;
-          new Notice(msg);
+          try {
+            const report = await Movi.Test.runAll(this.logger);
+            new Notice(`movi tests: ${report.passed} passed, ${report.failed} failed`);
+          } catch (error) {
+            this.reportError("running smoke tests", error);
+          }
         },
       });
 
@@ -123,521 +68,62 @@ register(() => {
       });
 
       this.registerEvent(
-        this.app.workspace.on("file-open", (file) => {
-          if (file && file.extension === "md") {
-            this.addMarkdownPlayActions();
-          }
-          this.addCandidateViewPlayActions();
-          this.addPlayerViewPlayActions();
-        })
-      );
-
-      this.registerEvent(
         this.app.workspace.on("active-leaf-change", (leaf) => {
-          if (leaf && leaf.view instanceof MarkdownView) {
-            this.addMarkdownPlayActions();
-          }
-          this.addCandidateViewPlayActions();
-          this.addPlayerViewPlayActions();
           this.setPlayerViewActive(this.isPlayerView(leaf && leaf.view));
-        })
-      );
-
-      this.registerEvent(
-        this.app.workspace.on("layout-change", () => {
-          this.addMarkdownPlayActions();
-          this.addCandidateViewPlayActions();
-          this.addPlayerViewPlayActions();
-        })
-      );
-
-      this.registerEvent(
-        this.app.workspace.on("editor-change", () => {
-          this.scheduleMarkdownPlayActionStateRefresh();
-        })
-      );
-
-      this.registerEvent(
-        this.app.metadataCache.on("changed", (file) => {
-          if (file && file.extension === "md") {
-            this.updateMarkdownPlayActionStates();
-          }
         })
       );
 
       this.registerDomEvent(window, "gptviz:movie-mode-request", (event) => {
         this.handleMovieModeRequest(event).catch(async (error) => {
-          const requestedPath =
-            event && event.detail && typeof event.detail.filePath === "string"
-              ? event.detail.filePath
-              : "<active>";
+          const requestedPath = event.detail.filePath || "<active>";
           await this.reportScriptError(requestedPath, error, "movie-mode-request");
         });
       });
 
       this.registerDomEvent(window, "gptviz:script-required-assets-request", (event) => {
         this.handleScriptRequiredAssetsRequest(event).catch(async (error) => {
-          const requestedPath =
-            event && event.detail && typeof event.detail.filePath === "string"
-              ? event.detail.filePath
-              : "<unknown>";
+          const requestedPath = event.detail.filePath || "<unknown>";
           await this.reportScriptError(requestedPath, error, "script-required-assets-request");
         });
       });
-
-      this.addMarkdownPlayActions();
-      this.addCandidateViewPlayActions();
-      this.addPlayerViewPlayActions();
-
-      this.app.workspace.onLayoutReady(() => {
-        this.addMarkdownPlayActions();
-        this.addCandidateViewPlayActions();
-        this.addPlayerViewPlayActions();
-      });
-    }
-
-    markdownFileHasScriptHeading(file) {
-      if (!file || file.extension !== "md") {
-        return false;
-      }
-
-      const cache = this.app.metadataCache.getFileCache(file);
-      const headings = Array.isArray(cache?.headings) ? cache.headings : [];
-      return headings.some(
-        (heading) =>
-          typeof heading?.heading === "string" &&
-          heading.heading.trim().toLowerCase().startsWith("script")
-      );
-    }
-
-    setMarkdownPlayActionEnabled(actionEl, enabled) {
-      if (!actionEl) {
-        return;
-      }
-
-      if (enabled) {
-        actionEl.classList.remove("is-disabled");
-        actionEl.removeAttribute("aria-disabled");
-        actionEl.style.pointerEvents = "";
-        actionEl.style.opacity = "";
-        return;
-      }
-
-      actionEl.classList.add("is-disabled");
-      actionEl.setAttribute("aria-disabled", "true");
-      actionEl.style.pointerEvents = "none";
-      actionEl.style.opacity = "0.45";
-    }
-
-    scheduleMarkdownPlayActionStateRefresh() {
-      if (this.markdownActionRefreshTimer) {
-        window.clearTimeout(this.markdownActionRefreshTimer);
-      }
-
-      this.markdownActionRefreshTimer = window.setTimeout(() => {
-        this.markdownActionRefreshTimer = null;
-        this.updateMarkdownPlayActionStates();
-      }, 200);
-    }
-
-    updateMarkdownPlayActionStates() {
-      for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-        const view = leaf.view;
-        if (!(view instanceof MarkdownView) || !view.file) {
-          continue;
-        }
-
-        const enabled = this.markdownFileHasScriptHeading(view.file);
-        const actions = view.containerEl.querySelectorAll(
-          `.${this.markdownMoviPlayActionClass}`
-        );
-        actions.forEach((action) => {
-          this.setMarkdownPlayActionEnabled(action, enabled);
-        });
-      }
-    }
-
-    getFirstActionBySelector(actionsEl, selector) {
-      if (!actionsEl || !selector) {
-        return null;
-      }
-
-      return actionsEl.querySelector(selector);
-    }
-
-    enforceMoviActionOrder(view, moviActionClass) {
-      if (!view || !view.containerEl || !moviActionClass) {
-        return;
-      }
-
-      const actionsEl = view.containerEl.querySelector(".view-actions");
-      if (!actionsEl) {
-        return;
-      }
-
-      const markdownActionEl = this.getFirstActionBySelector(
-        actionsEl,
-        '.view-action.gptviz-return-to-note-action, .view-action[aria-label="Return to note"], .view-action[title="Return to note"], .view-action.mod-source-view, .view-action[aria-label*="Source mode"], .view-action[aria-label*="Live Preview"], .view-action[aria-label*="Reading view"], .view-action[aria-label*="Edit mode"]'
-      );
-      const imageActionEl = this.getFirstActionBySelector(
-        actionsEl,
-        '.view-action.gptviz-review-images-action, .view-action.gptviz-shared-review-action, .view-action[aria-label="GPTViz Candidate View"], .view-action[title="GPTViz Candidate View"]'
-      );
-      const moviActionEl = this.getFirstActionBySelector(
-        actionsEl,
-        `.${moviActionClass}, .view-action[aria-label="Movi Play"], .view-action[title="Movi Play"]`
-      );
-      const dependencyActionEl = this.getFirstActionBySelector(
-        actionsEl,
-        '.view-action.gptviz-dependency-check-action, .view-action.gptviz-shared-dependency-action, .view-action[aria-label="GPTViz Validate Dependencies"], .view-action[title="GPTViz Validate Dependencies"]'
-      );
-      const optionsActionEl = this.getFirstActionBySelector(
-        actionsEl,
-        '.view-action.mod-options, .view-action[aria-label*="More options"], .view-action[aria-label*="Options"]'
-      );
-
-      const orderedCore = [
-        markdownActionEl,
-        imageActionEl,
-        moviActionEl,
-        dependencyActionEl,
-      ].filter(Boolean);
-
-      if (orderedCore.length === 0) {
-        return;
-      }
-
-      let insertBefore = optionsActionEl || null;
-      for (let i = orderedCore.length - 1; i >= 0; i -= 1) {
-        const actionEl = orderedCore[i];
-        if (insertBefore) {
-          actionsEl.insertBefore(actionEl, insertBefore);
-        } else {
-          actionsEl.appendChild(actionEl);
-        }
-        insertBefore = actionEl;
-      }
-
-      if (optionsActionEl && actionsEl.lastChild !== optionsActionEl) {
-        actionsEl.appendChild(optionsActionEl);
-      }
-    }
-
-    removeMarkdownPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-        const view = leaf.view;
-        if (!(view instanceof MarkdownView)) {
-          continue;
-        }
-
-        view.containerEl
-          .querySelectorAll(
-            `.${this.markdownMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-          )
-          .forEach((action) => action.remove());
-      }
-    }
-
-    isGptvizCandidateView(view) {
-      return (
-        view &&
-        typeof view.getViewType === "function" &&
-        view.getViewType() === "gptviz-candidates"
-      );
     }
 
     isPlayerView(view) {
-      return (
-        view &&
-        typeof view.getViewType === "function" &&
-        view.getViewType() === Movi.MOVI_PLAYER_VIEW_TYPE
-      );
+      return Boolean(view) && view.getViewType() === Movi.MOVI_PLAYER_VIEW_TYPE;
     }
 
     setPlayerViewActive(active) {
       document.body.classList.toggle("movi-player-active", Boolean(active));
     }
 
-    normalizeAssetRef(assetRef) {
-      const raw = String(assetRef || "").trim();
-      if (!raw) {
-        return "";
-      }
-
-      let cleaned = raw;
-      const quoted = cleaned.match(/^(["'])(.*)\1$/);
-      if (quoted) {
-        cleaned = quoted[2];
-      }
-
-      const wiki = cleaned.match(/^\[\[(.+)\]\]$/);
-      if (wiki) {
-        cleaned = wiki[1].split("|")[0].trim();
-      }
-
-      const parts = cleaned.split("/");
-      const fileName = parts[parts.length - 1].trim();
-      if (!fileName) {
-        return "";
-      }
-
-      if (/\.[A-Za-z0-9]+$/.test(fileName)) {
-        return fileName.toLowerCase();
-      }
-
-      return `${fileName.toLowerCase()}.png`;
-    }
-
-    getAssetNameForCandidateView(view) {
-      if (!this.isGptvizCandidateView(view)) {
-        return null;
-      }
-
-      const index = Number(view.index);
-      const candidates = Array.isArray(view.candidates) ? view.candidates : [];
-      const candidate =
-        Number.isFinite(index) && index >= 0 && index < candidates.length
-          ? candidates[index]
-          : null;
-      const candidateName = candidate && candidate.file ? candidate.file.name : "";
-      const normalizedCandidateName = this.normalizeAssetRef(candidateName);
-
-      if (!normalizedCandidateName) {
-        return null;
-      }
-
-      const candidateMatch = normalizedCandidateName.match(/^(.*)-[0-9]+\.png$/i);
-      if (candidateMatch && candidateMatch[1]) {
-        return `${candidateMatch[1]}.png`;
-      }
-
-      return normalizedCandidateName;
-    }
-
-    async findScriptsUsingAsset(assetName) {
-      const target = this.normalizeAssetRef(assetName);
-      if (!target) {
-        return [];
-      }
-
-      const results = [];
-      const markdownFiles = this.app.vault.getMarkdownFiles()
-        .filter(file => file.path.startsWith(contentPath("")));
-
-      for (const file of markdownFiles) {
-        const text = await this.app.vault.cachedRead(file);
-        const lines = String(text || "").split(/\r?\n/);
-        let inScript = false;
-        let hasMatch = false;
-
-        for (let i = 0; i < lines.length; i += 1) {
-          const rawLine = lines[i];
-          const trimmed = rawLine.trim();
-
-          if (/^#{1,6}\s*Script\b.*$/i.test(trimmed)) {
-            inScript = true;
-            continue;
-          }
-
-          if (inScript && /^#{1,6}\s+/.test(rawLine)) {
-            inScript = false;
-            continue;
-          }
-
-          if (!inScript) {
-            continue;
-          }
-
-          if (!trimmed || /^#/.test(trimmed)) {
-            continue;
-          }
-
-          const showMatch = trimmed.match(
-            /^show\s+(.+?)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s+for\s+[0-9]*\.?[0-9]+s(?:\s+#.*)?$/i
-          );
-          if (!showMatch) {
-            continue;
-          }
-
-          if (this.normalizeAssetRef(showMatch[1]) === target) {
-            hasMatch = true;
-            break;
-          }
-        }
-
-        if (hasMatch) {
-          results.push({
-            name: file.basename,
-            path: file.path,
-          });
-        }
-      }
-
-      return results.sort((a, b) => a.name.localeCompare(b.name));
-    }
-
-    async showScriptsUsingCurrentCandidateAsset(view) {
-      const assetName = this.getAssetNameForCandidateView(view);
-      if (!assetName) {
-        new Notice("movi: No current candidate asset selected.");
-        return;
-      }
-
-      const rows = await this.findScriptsUsingAsset(assetName);
-      new ScriptUsageModal(this.app, assetName, rows).open();
-    }
-
-    removeCandidateViewPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType("gptviz-candidates")) {
-        const view = leaf.view;
-        if (!this.isGptvizCandidateView(view)) {
-          continue;
-        }
-
-        view.containerEl
-          .querySelectorAll(
-            `.${this.candidateMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-          )
-          .forEach((action) => action.remove());
-      }
-    }
-
-    removePlayerViewPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType(Movi.MOVI_PLAYER_VIEW_TYPE)) {
-        const view = leaf.view;
-        if (!this.isPlayerView(view)) {
-          continue;
-        }
-
-        view.containerEl
-          .querySelectorAll(
-            `.${this.playerMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-          )
-          .forEach((action) => action.remove());
-      }
-    }
-
-    async playSourceFromPlayerView(view) {
-      const sourcePath =
-        (view && view.movie && view.movie.sourcePath) ||
-        this.lastPlayedScriptPath;
-
-      if (!sourcePath) {
-        new Notice("movi: No source script is loaded in Player View.");
-        return;
-      }
-
-      const file = this.app.vault.getAbstractFileByPath(sourcePath);
-      if (!file) {
-        new Notice(`movi: Source file not found: ${sourcePath}`);
-        return;
-      }
-
-      await this.playScriptFile(file);
-    }
-
-    addPlayerViewPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType(Movi.MOVI_PLAYER_VIEW_TYPE)) {
-        const view = leaf.view;
-        if (!this.isPlayerView(view)) {
-          continue;
-        }
-
-        const existingActions = view.containerEl.querySelectorAll(
-          `.${this.playerMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-        );
-        existingActions.forEach((action) => action.remove());
-
-        if (typeof view.startModeRibbonSync === "function") {
-          view.startModeRibbonSync();
-        } else if (typeof view.ensureModeRibbon === "function") {
-          view.ensureModeRibbon();
-        }
-      }
-    }
-
-    addCandidateViewPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType("gptviz-candidates")) {
-        const view = leaf.view;
-        if (!this.isGptvizCandidateView(view)) {
-          continue;
-        }
-
-        const existingActions = view.containerEl.querySelectorAll(
-          `.${this.candidateMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-        );
-        existingActions.forEach((action) => action.remove());
-      }
-    }
-
-    addMarkdownPlayActions() {
-      for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-        const view = leaf.view;
-        if (!(view instanceof MarkdownView) || !view.file) {
-          continue;
-        }
-
-        const existingActions = view.containerEl.querySelectorAll(
-          `.${this.markdownMoviPlayActionClass}, [aria-label="Movi Play"], [title="Movi Play"]`
-        );
-        existingActions.forEach((action) => action.remove());
-      }
-    }
-
+    // gptviz contract: detail = { filePath, resolve({ requiredAssets }), reject(error) }.
+    // Claim the request synchronously so gptviz knows movi is present.
     async handleScriptRequiredAssetsRequest(event) {
-      const detail = event && event.detail ? event.detail : null;
-      const filePath = detail && typeof detail.filePath === "string"
-        ? detail.filePath
-        : "";
-      const resolve = detail && typeof detail.resolve === "function"
-        ? detail.resolve
-        : null;
-      const reject = detail && typeof detail.reject === "function"
-        ? detail.reject
-        : null;
+      event.preventDefault();
+      const { filePath, resolve, reject } = event.detail;
 
       try {
-        const assets = await this.getScriptRequiredAssetsForFilePath(filePath);
-        if (resolve) {
-          resolve({
-            ok: true,
-            requiredAssets: assets,
-          });
-        }
+        resolve({ requiredAssets: await this.getScriptRequiredAssetsForFilePath(filePath) });
       } catch (error) {
-        if (reject) {
-          reject(error);
-          return;
-        }
-        throw error;
+        reject(error);
       }
     }
 
     async getScriptRequiredAssetsForFilePath(filePath) {
-      const path = String(filePath || "").trim();
-      if (!path) {
-        return [];
-      }
-
-      const file = this.app.vault.getAbstractFileByPath(path);
+      const file = this.app.vault.getAbstractFileByPath(filePath);
       if (!file || file.extension !== "md") {
-        return [];
+        throw new Error(`Script note not found: ${filePath}`);
       }
 
       const text = await this.app.vault.cachedRead(file);
-      const parsed = Movi.Parser.parseMarkdown(text, file.path);
-      return Array.isArray(parsed.requiredAssets) ? parsed.requiredAssets : [];
+      return Movi.Parser.parseMarkdown(text, file.path).requiredAssets;
     }
 
     async handleMovieModeRequest(event) {
-      if (event && typeof event.preventDefault === "function") {
-        event.preventDefault();
-      }
+      event.preventDefault();
 
-      const requestedPath =
-        event && event.detail && typeof event.detail.filePath === "string"
-          ? event.detail.filePath
-          : "";
+      // filePath is optional: without it, play the active script.
+      const requestedPath = event.detail.filePath || "";
 
       if (requestedPath) {
         const file = this.app.vault.getAbstractFileByPath(requestedPath);
@@ -695,7 +181,7 @@ register(() => {
     }
 
     async preparePlaybackActions(parsed, sourcePath) {
-      const actions = parsed && Array.isArray(parsed.actions) ? parsed.actions : [];
+      const actions = parsed.actions;
       if (actions.length === 0) {
         throw {
           category: "Content",
@@ -976,7 +462,7 @@ register(() => {
         return {};
       }
 
-      let text = "";
+      let text;
       try {
         text = await this.app.vault.adapter.read(markPath);
       } catch (error) {
@@ -989,7 +475,7 @@ register(() => {
         };
       }
 
-      let parsed = null;
+      let parsed;
       try {
         parsed = JSON.parse(text);
       } catch (error) {
@@ -1002,14 +488,30 @@ register(() => {
         };
       }
 
-      const marks = parsed && Array.isArray(parsed.marks) ? parsed.marks : [];
+      if (!parsed || !Array.isArray(parsed.marks)) {
+        throw {
+          category: "Content",
+          code: "MCONTENT013",
+          line: 1,
+          column: 1,
+          message: `Mark sidecar '${markPath}' has no "marks" array.`,
+        };
+      }
+
       const map = {};
-      for (let i = 0; i < marks.length; i += 1) {
-        const mark = marks[i] || {};
-        const name = String(mark.name || "").trim();
-        const x = Number(mark.x);
-        const y = Number(mark.y);
-        if (!name) continue;
+      for (const mark of parsed.marks) {
+        const name = String((mark && mark.name) || "").trim();
+        const x = Number(mark && mark.x);
+        const y = Number(mark && mark.y);
+        if (!name) {
+          throw {
+            category: "Content",
+            code: "MCONTENT014",
+            line: 1,
+            column: 1,
+            message: `Mark sidecar '${markPath}' has a mark with no name.`,
+          };
+        }
         if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
           throw {
             category: "Content",
@@ -1031,7 +533,7 @@ register(() => {
         return "English";
       }
 
-      let text = "";
+      let text;
       try {
         text = await this.app.vault.adapter.read(configPath);
       } catch (error) {
@@ -1044,7 +546,7 @@ register(() => {
         };
       }
 
-      let parsed = null;
+      let parsed;
       try {
         parsed = JSON.parse(text);
       } catch (error) {
@@ -1070,7 +572,7 @@ register(() => {
         return {};
       }
 
-      let text = "";
+      let text;
       try {
         text = await this.app.vault.adapter.read(languagePath);
       } catch (error) {
@@ -1140,7 +642,6 @@ register(() => {
 
       await this.app.workspace.revealLeaf(leaf);
       this.setPlayerViewActive(true);
-      this.addPlayerViewPlayActions();
       return leaf.view;
     }
 
@@ -1173,25 +674,32 @@ register(() => {
       }
     }
 
+    // Script errors (Parser/Content, carrying category/code/line) are the author's to fix:
+    // Notice + movi.log + _lastErr.log. Anything else is a code bug and goes to reportError.
     async reportScriptError(filePath, error, operation) {
-      const category = error && error.category ? error.category : "Content";
-      const code = error && error.code ? error.code : "MCONTENT001";
-      const message = error && error.message ? error.message : String(error);
-      const line = error && error.line !== undefined ? error.line : "-";
+      if (!error || !error.category) {
+        this.reportError(operation, error);
+        return;
+      }
+
+      const { category, code, message } = error;
+      const line = error.line || 1;
       const notice = `movi ${category} ${code} at ${filePath}:${line} - ${message}`;
       new Notice(notice, 10000);
 
-      await this.logger.error(operation || "script", category, code, message, {
+      await this.logger.error(operation, category, code, message, {
         file: filePath,
-        line: error && error.line ? error.line : 1,
-        column: error && error.column ? error.column : 1,
-        stack: error && error.stack ? error.stack : undefined,
+        line,
+        column: error.column || 1,
       });
+      await this.writeLastError(operation, "script", notice, new Date().toISOString());
     }
 
     async onunload() {
-      this.removeCandidateViewPlayActions();
-      this.removePlayerViewPlayActions();
+      if (this.errorModal) {
+        this.errorModal.close();
+        this.errorModal = null;
+      }
       this.setPlayerViewActive(false);
 
       if (this.playerViewStyle) {
@@ -1214,11 +722,9 @@ register(() => {
     }
   }
 
-  return {
+  Object.assign(Movi, {
     MoviPlugin,
-  };
+  });
+
+  module.exports = Movi.MoviPlugin;
 });
-
-module.exports = Movi.MoviPlugin;
-
-

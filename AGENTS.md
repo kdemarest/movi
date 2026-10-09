@@ -7,7 +7,7 @@ Quick context (always load):
 
 Full-read policy for editing movi:
 - Read full ARCH.md for architecture, plugin-load behavior, split/build workflow, runtime boundaries, player-view lifecycle, timeline model, or subsystem-boundary changes.
-- Read full SPEC.md for required behavior, tool contracts, failure policy, test/validation expectations, or Implemented tracking changes.
+- Read full SPEC.md for scope and contracts; PLAN.md for planned work.
 - Read full MoviScript.md for script syntax, parser/semantic rules, naming/disambiguation, timing forms, or authoring-convention changes.
 - If scope is unclear or quick context is insufficient, read all three full files before editing.
 
@@ -18,13 +18,12 @@ Core rules:
 - Keep code Android-compatible with Obsidian mobile.
 - Use Obsidian APIs, not Node/Electron APIs.
 - Never expose, log, or store API keys outside Obsidian SecretStorage.
-- Update SPEC.md Implemented as needed; do not edit Planned unless explicitly requested.
+- Code is the source of truth for implemented behavior; do not describe it in docs. Edit PLAN.md only when asked.
 
 Scripts and build workflow:
 - Run scripts as bash script.sh (not ./script.sh).
 - Assume all movi .sh scripts run from cwd = movi/.
-- Never run bash build.sh (or any build command) without explicit user approval in that same chat turn.
-- If a build is needed, ask first every time; do not auto-build.
+- Run build.sh after code changes so the user can test.
 
 Vault visibility constraint:
 - The vault has a plugin that allows opening/editing arbitrary extensions.

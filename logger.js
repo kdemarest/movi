@@ -1,4 +1,4 @@
-register(() => {
+unit("logger", [], () => {
   class Logger {
     constructor(app, options) {
       this.app = app;
@@ -87,7 +87,7 @@ register(() => {
     }
   }
 
-  return {
+  Object.assign(Movi, {
     Logger,
-  };
+  });
 });

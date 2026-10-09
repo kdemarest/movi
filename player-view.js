@@ -1,4 +1,4 @@
-register(() => {
+unit("player-view", [], () => {
   const { ItemView, setIcon } = require("obsidian");
 
   const MOVI_PLAYER_VIEW_TYPE = "movi-player-view";
@@ -37,9 +37,6 @@ register(() => {
       this.totalDurationMs = 0;
       this.actionStartTimes = [];
       this.currentElapsedMs = 0;
-      this.modeRibbonObserver = null;
-      this.modeRibbonSyncTimer = null;
-      this.modeRibbonLastLogAt = 0;
     }
 
     getViewType() {
@@ -56,249 +53,13 @@ register(() => {
 
     async onOpen() {
       this.renderShell();
-      this.logModeRibbonState("onOpen:after-render", true);
-      this.startModeRibbonSync();
-      this.scheduleModeRibbonSync();
       this.updatePlayPauseButton();
       this.updateScrubberUi(0);
       this.updateStatus("Ready");
-      this.logModeRibbonState("onOpen:done", true);
     }
 
     async onClose() {
       this.stopPlayback();
-      this.stopModeRibbonSync();
-    }
-
-    getHeaderEl() {
-      const directHeaderEl = this.containerEl.querySelector(".view-header");
-      if (directHeaderEl) {
-        return directHeaderEl;
-      }
-
-      const leafContentEl = this.containerEl.closest(".workspace-leaf-content");
-      if (!leafContentEl) {
-        return null;
-      }
-
-      return leafContentEl.querySelector(".view-header");
-    }
-
-    logModeRibbonState(reason, force) {
-      if (!this.logger || typeof this.logger.info !== "function") {
-        return;
-      }
-
-      const now = Date.now();
-      if (!force && now - this.modeRibbonLastLogAt < 300) {
-        return;
-      }
-      this.modeRibbonLastLogAt = now;
-
-      const headerEl = this.getHeaderEl();
-      const ribbonEl = headerEl ? headerEl.querySelector(".mode-ribbon") : null;
-      const actionsEl = headerEl ? headerEl.querySelector(".view-actions") : null;
-      const optionsEl = actionsEl
-        ? actionsEl.querySelector('.view-action.mod-options, .view-action[aria-label*="More options"], .view-action[aria-label*="Options"]')
-        : null;
-
-      const parts = [
-        `reason=${reason || "-"}`,
-        `header=${headerEl ? "1" : "0"}`,
-        `ribbon=${ribbonEl ? "1" : "0"}`,
-        `actions=${actionsEl ? "1" : "0"}`,
-        `options=${optionsEl ? "1" : "0"}`,
-        `actionsDisplay=${actionsEl ? (actionsEl.style.display || "<empty>") : "-"}`,
-        `ribbonDisplay=${ribbonEl ? (ribbonEl.style.display || "<empty>") : "-"}`,
-        `ribbonButtons=${ribbonEl ? String(ribbonEl.querySelectorAll("button").length) : "0"}`,
-      ];
-
-      this.logger
-        .info("mode-ribbon", parts.join(" | "), {
-          category: "UI",
-          code: "MMODE001",
-          file: this.movie && this.movie.sourcePath ? this.movie.sourcePath : "-",
-        })
-        .catch(() => {});
-    }
-
-    startModeRibbonSync() {
-      this.stopModeRibbonSync();
-      this.ensureModeRibbon();
-
-      const leafContentEl = this.containerEl.closest(".workspace-leaf-content");
-      if (!leafContentEl || typeof MutationObserver === "undefined") {
-        return;
-      }
-
-      this.modeRibbonObserver = new MutationObserver(() => {
-        this.logModeRibbonState("observer:mutation", false);
-        this.scheduleModeRibbonSync();
-      });
-      this.modeRibbonObserver.observe(leafContentEl, {
-        childList: true,
-        subtree: true,
-      });
-    }
-
-    stopModeRibbonSync() {
-      if (this.modeRibbonObserver) {
-        this.modeRibbonObserver.disconnect();
-        this.modeRibbonObserver = null;
-      }
-
-      if (this.modeRibbonSyncTimer !== null) {
-        window.clearTimeout(this.modeRibbonSyncTimer);
-        this.modeRibbonSyncTimer = null;
-      }
-    }
-
-    scheduleModeRibbonSync() {
-      if (this.modeRibbonSyncTimer !== null) {
-        return;
-      }
-
-      this.modeRibbonSyncTimer = window.setTimeout(() => {
-        this.modeRibbonSyncTimer = null;
-        this.ensureModeRibbon();
-      }, 0);
-    }
-
-    ensureModeRibbon() {
-      const headerEl = this.getHeaderEl();
-      if (!headerEl) {
-        this.logModeRibbonState("ensure:no-header", true);
-        return null;
-      }
-
-      let ribbon = headerEl.querySelector(".mode-ribbon");
-      if (!ribbon) {
-        this.logModeRibbonState("ensure:create-ribbon", true);
-        ribbon = document.createElement("div");
-        ribbon.classList.add("mode-ribbon");
-        ribbon.style.display = "inline-flex";
-        ribbon.style.alignItems = "center";
-        ribbon.style.gap = "0.25em";
-        ribbon.style.marginInlineStart = "auto";
-        ribbon.style.color = "var(--icon-color)";
-
-        const actionsEl = headerEl.querySelector(".view-actions");
-        if (actionsEl) {
-          headerEl.insertBefore(ribbon, actionsEl);
-        } else {
-          headerEl.appendChild(ribbon);
-        }
-      }
-
-      ribbon.style.color = "var(--icon-color)";
-
-      const actionsEl = headerEl.querySelector(".view-actions");
-      this.ensureModeRibbonMoreActionsButton(ribbon, actionsEl);
-
-      if (actionsEl) {
-        actionsEl.style.display = "none";
-      }
-
-      this.logModeRibbonState("ensure:complete", false);
-      return ribbon;
-    }
-
-    addModeButton(ribbon, position, buttonEl) {
-      if (!ribbon || !Number.isInteger(position) || position < 0 || !(buttonEl instanceof HTMLElement)) {
-        return null;
-      }
-
-      const fallbackKey =
-        buttonEl.getAttribute("aria-label") ||
-        buttonEl.getAttribute("title") ||
-        (buttonEl.textContent || "").trim();
-      const buttonKey = buttonEl.getAttribute("data-mode-button-key") || fallbackKey;
-
-      if (buttonKey) {
-        buttonEl.setAttribute("data-mode-button-key", buttonKey);
-        ribbon
-          .querySelectorAll(`[data-mode-button-key="${CSS.escape(buttonKey)}"]`)
-          .forEach((existing) => {
-            if (existing !== buttonEl) existing.remove();
-          });
-      }
-
-      const existingAtPosition = ribbon.querySelector(
-        `[data-mode-button-position="${position}"]`
-      );
-      if (existingAtPosition && existingAtPosition !== buttonEl) {
-        existingAtPosition.remove();
-      }
-
-      buttonEl.setAttribute("data-mode-button-position", String(position));
-
-      const orderedButtons = [...ribbon.children].filter((child) => child !== buttonEl);
-      const insertBefore = orderedButtons.find((child) => {
-        const childPos = Number(child.getAttribute("data-mode-button-position"));
-        return Number.isFinite(childPos) && childPos > position;
-      });
-
-      if (insertBefore) {
-        ribbon.insertBefore(buttonEl, insertBefore);
-      } else {
-        ribbon.appendChild(buttonEl);
-      }
-
-      return buttonEl;
-    }
-
-    ensureModeRibbonMoreActionsButton(ribbon, actionsEl) {
-      const optionsActionEl = actionsEl
-        ? actionsEl.querySelector(
-            '.view-action.mod-options, .view-action[aria-label*="More options"], .view-action[aria-label*="Options"]'
-          )
-        : null;
-
-      if (!optionsActionEl) {
-        if (ribbon) {
-          ribbon
-            .querySelectorAll('.movi-mode-more-actions, [data-mode-button-key="MoreActions"]')
-            .forEach((el) => el.remove());
-        }
-        return;
-      }
-
-      const buttonEl = document.createElement("button");
-      buttonEl.classList.add("clickable-icon");
-      buttonEl.classList.add("view-action");
-      buttonEl.classList.add("movi-mode-more-actions");
-      buttonEl.style.color = "var(--icon-color)";
-      buttonEl.setAttribute("aria-label", "More Actions");
-      buttonEl.setAttribute("title", "More Actions");
-      buttonEl.setAttribute("type", "button");
-      buttonEl.setAttribute("data-mode-button-key", "MoreActions");
-      setIcon(buttonEl, "more-vertical");
-      buttonEl.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        const headerEl = this.getHeaderEl();
-        const liveActionsEl = headerEl ? headerEl.querySelector(".view-actions") : null;
-        const liveOptionsActionEl = liveActionsEl
-          ? liveActionsEl.querySelector(
-              '.view-action.mod-options, .view-action[aria-label*="More options"], .view-action[aria-label*="Options"]'
-            )
-          : null;
-
-        if (!liveOptionsActionEl) {
-          return;
-        }
-
-        liveOptionsActionEl.dispatchEvent(
-          new MouseEvent("click", {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          })
-        );
-      });
-
-      this.addModeButton(ribbon, 99, buttonEl);
     }
 
     renderShell() {
@@ -473,12 +234,11 @@ register(() => {
     }
 
     getTimelineActionDurationMs(actions, index) {
-      const list = Array.isArray(actions) ? actions : [];
-      const action = list[index];
+      const action = actions[index];
       if (!action) return 0;
 
       if (action.type === "show") {
-        const next = list[index + 1];
+        const next = actions[index + 1];
         if (next && next.type === "zoom") {
           return 0;
         }
@@ -516,7 +276,7 @@ register(() => {
       if (this.zoomDotEl) this.zoomDotEl.style.display = "none";
       this.stopZoomDotTracking();
 
-      const actions = movie && Array.isArray(movie.actions) ? movie.actions : [];
+      const actions = movie.actions;
       let running = 0;
       for (let i = 0; i < actions.length; i += 1) {
         this.actionStartTimes[i] = running;
@@ -535,7 +295,7 @@ register(() => {
         }
       }
 
-      const captions = movie && Array.isArray(movie.captions) ? movie.captions : [];
+      const captions = movie.captions;
       this.captionWindows = captions
         .map(caption => {
           const anchorStartMs = caption.anchorIndex >= 0 ? (this.actionStartTimes[caption.anchorIndex] || 0) : 0;
@@ -563,7 +323,7 @@ register(() => {
     }
 
     play() {
-      if (!this.movie || !Array.isArray(this.movie.actions) || this.movie.actions.length === 0) {
+      if (!this.movie || this.movie.actions.length === 0) {
         this.updateStatus("No movie loaded.");
         return;
       }
@@ -761,7 +521,7 @@ register(() => {
     }
 
     seekToMs(targetMs) {
-      if (!this.movie || !Array.isArray(this.movie.actions) || this.movie.actions.length === 0) {
+      if (!this.movie || this.movie.actions.length === 0) {
         return;
       }
 
@@ -820,7 +580,7 @@ register(() => {
     }
 
     applyCompletedStateUpTo(indexExclusive) {
-      const actions = this.movie && Array.isArray(this.movie.actions) ? this.movie.actions : [];
+      const actions = this.movie.actions;
 
       this.stopZoomDotTracking();
       if (this.zoomDotEl) {
@@ -925,7 +685,7 @@ register(() => {
       const fireReady = () => {
         if (readyFired) return;
         readyFired = true;
-        if (typeof onReady === "function") onReady();
+        if (onReady) onReady();
       };
 
       this.imageEl.onload = () => {
@@ -1094,7 +854,7 @@ register(() => {
     }
 
     updateElapsedFromPlaybackNow() {
-      if (!this.movie || !Array.isArray(this.movie.actions) || this.movie.actions.length === 0) {
+      if (!this.movie || this.movie.actions.length === 0) {
         this.currentElapsedMs = 0;
         this.updateScrubberUi(0);
         return;
@@ -1190,10 +950,8 @@ register(() => {
     }
   }
 
-  return {
+  Object.assign(Movi, {
     PlayerView,
     MOVI_PLAYER_VIEW_TYPE,
-  };
+  });
 });
-
-
