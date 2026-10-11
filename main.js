@@ -89,7 +89,8 @@ unit("plugin", [], () => {
     }
 
     isPlayerView(view) {
-      return Boolean(view) && view.getViewType() === Movi.MOVI_PLAYER_VIEW_TYPE;
+      // Class check: an unloaded tab holds a placeholder view that only reports this type.
+      return view instanceof Movi.PlayerView;
     }
 
     setPlayerViewActive(active) {
@@ -122,8 +123,10 @@ unit("plugin", [], () => {
     async handleMovieModeRequest(event) {
       event.preventDefault();
 
-      // filePath is optional: without it, play the active script.
+      // filePath is optional: without it, play the active script. scriptLine (0-based, optional)
+      // picks among several Script headings in that file.
       const requestedPath = event.detail.filePath || "";
+      const scriptLine = event.detail.scriptLine;
 
       if (requestedPath) {
         const file = this.app.vault.getAbstractFileByPath(requestedPath);
@@ -131,7 +134,7 @@ unit("plugin", [], () => {
 
         if (file && (extension === "md" || extension === "ms")) {
           try {
-            await this.playScriptFile(file);
+            await this.playScriptFile(file, scriptLine);
             return;
           } catch (error) {
             await this.reportScriptError(file.path, error, "movie-mode-request");
@@ -143,9 +146,9 @@ unit("plugin", [], () => {
       await this.playActiveScript();
     }
 
-    async playScriptFile(file) {
+    async playScriptFile(file, scriptLine) {
       const text = await this.app.vault.cachedRead(file);
-      const parsed = Movi.Parser.parseMarkdown(text, file.path);
+      const parsed = Movi.Parser.parseMarkdown(text, file.path, scriptLine);
       const { actions, captions } = await this.preparePlaybackActions(parsed, file.path);
 
       const view = await this.getOrCreatePlayerView();

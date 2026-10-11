@@ -137,6 +137,19 @@ unit("tests", [], () => {
         assertEqual(section.lines.length, 2, "script section line count");
       });
 
+      cases.push(function testPickScriptSectionByLine() {
+        const md = "# Script one\nshow a.png for 1s\n# Script two\nshow b.png for 1s\nshow c.png for 1s\n";
+        const parsed = Movi.Parser.parseMarkdown(md, "demo.md", 2);
+        assertEqual(parsed.requiredAssets.join(","), "b.png,c.png", "second script's assets");
+        let threw = false;
+        try {
+          Movi.Parser.parseMarkdown(md, "demo.md", 1);
+        } catch (error) {
+          threw = true;
+        }
+        assertEqual(threw, true, "non-Script line should throw");
+      });
+
       cases.push(function testParseValidShowCommand() {
         const md = "# Script\nshow hero.png for 2.5s\n";
         const parsed = Movi.Parser.parseMarkdown(md, "demo.md");
