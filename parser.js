@@ -13,17 +13,31 @@ unit("parser", [], () => {
   }
 
   class Parser {
-    static parseMarkdown(markdownText, filePath) {
-      const section = Parser.extractScriptSection(markdownText, filePath);
+    // scriptLine (optional, 0-based) picks which Script heading to parse; default is the first.
+    static parseMarkdown(markdownText, filePath, scriptLine) {
+      const section = Parser.extractScriptSection(markdownText, filePath, scriptLine);
       return Parser.parseScriptLines(section.lines, filePath, section.startLine);
     }
 
-    static extractScriptSection(markdownText, filePath) {
+    static extractScriptSection(markdownText, filePath, scriptLine) {
       const text = String(markdownText || "");
       const lines = text.split(/\r?\n/);
       let start = -1;
 
-      for (let i = 0; i < lines.length; i += 1) {
+      if (Number.isInteger(scriptLine)) {
+        if (!/^#{1,6}\s*Script\b.*$/i.test(lines[scriptLine] || "")) {
+          throw new ParserError({
+            code: "MPARSE001",
+            file: filePath,
+            line: scriptLine + 1,
+            column: 1,
+            message: "No '# Script' heading on the requested line.",
+          });
+        }
+        start = scriptLine;
+      }
+
+      for (let i = 0; start === -1 && i < lines.length; i += 1) {
         if (/^#{1,6}\s*Script\b.*$/i.test(lines[i])) {
           start = i;
           break;
